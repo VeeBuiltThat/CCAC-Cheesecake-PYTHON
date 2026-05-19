@@ -201,6 +201,23 @@ def db_execute(sql: str, params: tuple = ()) -> str | None:
         conn.close()
 
 
+def _patch_db_schema() -> None:
+    """One-time schema migrations — makes legacy NOT NULL columns nullable so
+    dashboard INSERTs don't fail when those columns aren't managed here."""
+    conn, _ = get_db()
+    if conn is None:
+        return
+    try:
+        with conn.cursor() as cur:
+            # trigger_words.message was added in an older schema with NOT NULL;
+            # the dashboard doesn't use it, so make it nullable.
+            cur.execute("ALTER TABLE trigger_words MODIFY COLUMN message TEXT NULL")
+    except Exception:
+        pass  # column may not exist or already nullable — harmless
+    finally:
+        conn.close()
+
+
 # ─── Config Loader ─────────────────────────────────────────────────────────────
 
 def load_bot_config() -> dict:
@@ -289,6 +306,7 @@ def _snowflake_input(label: str, value: int, key: str | None = None, help: str |
 # ══════════════════════════════════════════════════════════════════════════════
 
 check_auth()
+_patch_db_schema()
 
 settings = load_settings()
 bot_cfg = load_bot_config()
