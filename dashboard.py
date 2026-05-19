@@ -65,7 +65,16 @@ SETTINGS_FILE = ROOT / "dashboard_settings.json"
 sys.path.insert(0, str(ROOT))
 
 # ─── Authentication ────────────────────────────────────────────────────────────
-ADMIN_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "cheesecake-admin")
+# Priority: .env / env var → st.secrets → hardcoded default
+def _get_admin_password() -> str:
+    if (pw := os.getenv("DASHBOARD_PASSWORD")):
+        return pw
+    try:
+        return st.secrets["DASHBOARD_PASSWORD"]
+    except Exception:
+        return "cheesecake-admin"
+
+ADMIN_PASSWORD = _get_admin_password()
 
 
 def check_auth() -> None:
@@ -101,25 +110,58 @@ def save_settings(settings: dict) -> None:
 # ─── Bot Config Loader ────────────────────────────────────────────────────────
 
 def _load_cogs_config():
-    """Load cogs/config.py by file path — works even without cogs/__init__.py."""
+    """Load cogs/config.py by file path. Returns None if the file doesn't exist."""
     cfg_path = Path(__file__).parent / "cogs" / "config.py"
+    if not cfg_path.exists():
+        return None
     spec = importlib.util.spec_from_file_location("cogs.config", cfg_path)
     mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
     spec.loader.exec_module(mod)  # type: ignore[union-attr]
     return mod
 
 
+def _get_db_creds() -> dict:
+    """Return DB connection kwargs.
+
+    Priority:
+    1. cogs/config.py  (local dev)
+    2. st.secrets["database"]  (Streamlit Cloud — add a [database] section in App Secrets)
+    3. Environment variables DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME
+    """
+    cfg = _load_cogs_config()
+    if cfg is not None:
+        return dict(
+            host=cfg.DB_HOST,
+            port=int(cfg.DB_PORT),
+            user=cfg.DB_USER,
+            password=cfg.DB_PASSWORD,
+            database=cfg.DB_NAME,
+        )
+    if hasattr(st, "secrets") and "database" in st.secrets:
+        db = st.secrets["database"]
+        return dict(
+            host=db["host"],
+            port=int(db.get("port", 3306)),
+            user=db["user"],
+            password=db["password"],
+            database=db["name"],
+        )
+    return dict(
+        host=os.getenv("DB_HOST", ""),
+        port=int(os.getenv("DB_PORT", "3306")),
+        user=os.getenv("DB_USER", ""),
+        password=os.getenv("DB_PASSWORD", ""),
+        database=os.getenv("DB_NAME", ""),
+    )
+
+
 # ─── Database Helpers ─────────────────────────────────────────────────────────
 
 def get_db():
     try:
-        cfg = _load_cogs_config()
+        creds = _get_db_creds()
         conn = pymysql.connect(
-            host=cfg.DB_HOST,
-            port=cfg.DB_PORT,
-            user=cfg.DB_USER,
-            password=cfg.DB_PASSWORD,
-            database=cfg.DB_NAME,
+            **creds,
             autocommit=True,
             connect_timeout=5,
             cursorclass=pymysql.cursors.DictCursor,
@@ -148,7 +190,7 @@ def db_execute(sql: str, params: tuple = ()) -> str | None:
     """Run a write query. Returns error string or None on success."""
     conn, err = get_db()
     if err or conn is None:
-        return err or "Could not connect to database"
+        return err or "Could not connect to database.  Check Streamlit secrets or environment variables."
     try:
         with conn.cursor() as cur:
             cur.execute(sql, params)
@@ -164,28 +206,39 @@ def db_execute(sql: str, params: tuple = ()) -> str | None:
 def load_bot_config() -> dict:
     try:
         cfg = _load_cogs_config()
+        creds = _get_db_creds()
+        if cfg is not None:
+            return {
+                "DB_HOST": cfg.DB_HOST,
+                "DB_PORT": cfg.DB_PORT,
+                "DB_USER": cfg.DB_USER,
+                "DB_PASSWORD": cfg.DB_PASSWORD,
+                "DB_NAME": cfg.DB_NAME,
+                "ABSENCE_ROLE_ID": cfg.ABSENCE_ROLE_ID,
+                "ABSENCE_CHANNEL_ID": cfg.ABSENCE_CHANNEL_ID,
+                "STAFF_ALERT_CHANNEL_ID": cfg.STAFF_ALERT_CHANNEL_ID,
+                "MIRROR_GUILD_ID": cfg.MIRROR_GUILD_ID,
+                "MIRROR_CHANNEL_ID": cfg.MIRROR_CHANNEL_ID,
+                "ABSENCE_WARNING_PERIOD": cfg.ABSENCE_WARNING_PERIOD,
+                "BIRTHDAY_CHANNEL_ID": cfg.BIRTHDAY_CHANNEL_ID,
+                "GIVEAWAY_CHANNEL_ID": cfg.GIVEAWAY_CHANNEL_ID,
+                "ALLOWED_LOVE_REACTOR_CHANNELS": list(cfg.ALLOWED_LOVE_REACTOR_CHANNELS),
+                "ALLOWED_CHANNELS": list(cfg.ALLOWED_CHANNELS),
+                "ART_SHOWCASE_ID": cfg.ART_SHOWCASE_ID,
+                "SERVER_FANART_ID": cfg.SERVER_FANART_ID,
+                "STARBOARD_ID": cfg.STARBOARD_ID,
+                "CUSTOM_EMOJI": cfg.CUSTOM_EMOJI,
+                "SMALL_THUMBNAIL": cfg.SMALL_THUMBNAIL,
+                "ABSENCE_RESTRICTED_CATEGORIES": list(cfg.ABSENCE_RESTRICTED_CATEGORIES),
+            }
+        # config.py not present (e.g. Streamlit Cloud) — return DB creds only;
+        # Discord IDs will be populated from dashboard_settings.json overrides.
         return {
-            "DB_HOST": cfg.DB_HOST,
-            "DB_PORT": cfg.DB_PORT,
-            "DB_USER": cfg.DB_USER,
-            "DB_PASSWORD": cfg.DB_PASSWORD,
-            "DB_NAME": cfg.DB_NAME,
-            "ABSENCE_ROLE_ID": cfg.ABSENCE_ROLE_ID,
-            "ABSENCE_CHANNEL_ID": cfg.ABSENCE_CHANNEL_ID,
-            "STAFF_ALERT_CHANNEL_ID": cfg.STAFF_ALERT_CHANNEL_ID,
-            "MIRROR_GUILD_ID": cfg.MIRROR_GUILD_ID,
-            "MIRROR_CHANNEL_ID": cfg.MIRROR_CHANNEL_ID,
-            "ABSENCE_WARNING_PERIOD": cfg.ABSENCE_WARNING_PERIOD,
-            "BIRTHDAY_CHANNEL_ID": cfg.BIRTHDAY_CHANNEL_ID,
-            "GIVEAWAY_CHANNEL_ID": cfg.GIVEAWAY_CHANNEL_ID,
-            "ALLOWED_LOVE_REACTOR_CHANNELS": list(cfg.ALLOWED_LOVE_REACTOR_CHANNELS),
-            "ALLOWED_CHANNELS": list(cfg.ALLOWED_CHANNELS),
-            "ART_SHOWCASE_ID": cfg.ART_SHOWCASE_ID,
-            "SERVER_FANART_ID": cfg.SERVER_FANART_ID,
-            "STARBOARD_ID": cfg.STARBOARD_ID,
-            "CUSTOM_EMOJI": cfg.CUSTOM_EMOJI,
-            "SMALL_THUMBNAIL": cfg.SMALL_THUMBNAIL,
-            "ABSENCE_RESTRICTED_CATEGORIES": list(cfg.ABSENCE_RESTRICTED_CATEGORIES),
+            "DB_HOST": creds["host"],
+            "DB_PORT": creds["port"],
+            "DB_USER": creds["user"],
+            "DB_PASSWORD": creds["password"],
+            "DB_NAME": creds["database"],
         }
     except Exception as exc:
         st.warning(f"Could not load bot config: {exc}")
