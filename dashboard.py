@@ -18,24 +18,43 @@ load_dotenv()
 
 # ─── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="🍰 Cheesecake Admin",
+    page_title="Cheesecake Admin",
     page_icon="🍰",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Custom CSS — pink/candy theme
+# Custom CSS — Cheesecake theme
 st.markdown("""
 <style>
-    [data-testid="stSidebar"] { background: linear-gradient(180deg, #2b0a1e 0%, #1a0d14 100%); }
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #2b0a1e 0%, #1a0d14 100%);
+        padding-top: 0.5rem;
+    }
     [data-testid="stSidebar"] * { color: #ffb6c1 !important; }
-    [data-testid="stSidebar"] hr { border-color: #ff69b4 !important; }
-    h1, h2, h3 { color: #ff69b4; }
-    .stButton > button[kind="primary"] { background-color: #ff69b4; border: none; color: white; }
-    .stButton > button[kind="primary"]:hover { background-color: #ff85c2; }
-    .stMetric { background: #1e0d1a; border-radius: 8px; padding: 10px; border: 1px solid #ff69b480; }
-    .stMetric label { color: #ffb6c1 !important; }
-    div[data-testid="stMetricValue"] { color: #ff69b4 !important; }
+    [data-testid="stSidebar"] hr { border-color: #ff69b440 !important; }
+    [data-testid="stSidebar"] .stRadio label {
+        font-size: 0.88rem;
+        padding: 3px 0;
+        letter-spacing: 0.2px;
+    }
+    h1 { color: #ff69b4; font-weight: 700; letter-spacing: -0.3px; margin-bottom: 0.25rem; }
+    h2, h3 { color: #d4457a; }
+    .stButton > button[kind="primary"] {
+        background-color: #c2185b;
+        border: none;
+        color: white;
+        font-weight: 600;
+    }
+    .stButton > button[kind="primary"]:hover { background-color: #e91e63; }
+    .stButton > button[kind="secondary"] { border-color: #c2185b55; color: #ff69b4; }
+    div[data-testid="stMetricValue"] { color: #ff69b4 !important; font-weight: 700; }
+    .stTabs [aria-selected="true"] {
+        color: #ff69b4 !important;
+        border-bottom-color: #ff69b4 !important;
+    }
+    .stAlert { border-radius: 6px; }
+    .stDataFrame { border-radius: 6px; overflow: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -51,10 +70,10 @@ ADMIN_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "cheesecake-admin")
 def check_auth() -> None:
     if st.session_state.get("authenticated"):
         return
-    st.title("🍰 Cheesecake Admin Dashboard")
-    st.markdown("### Please log in")
-    password = st.text_input("Admin Password", type="password", key="login_pw")
-    if st.button("Login", type="primary"):
+    st.title("Cheesecake Admin Dashboard")
+    st.markdown("### Sign in to continue")
+    password = st.text_input("Password", type="password", key="login_pw")
+    if st.button("Sign In", type="primary"):
         if password == ADMIN_PASSWORD:
             st.session_state["authenticated"] = True
             st.rerun()
@@ -75,7 +94,7 @@ def load_settings() -> dict:
 def save_settings(settings: dict) -> None:
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=2)
-    st.success("✅ Settings saved to `dashboard_settings.json`. Restart the bot to apply.")
+    st.success("Settings saved to `dashboard_settings.json`. Restart the bot to apply.")
 
 
 # ─── Database Helpers ──────────────────────────────────────────────────────────
@@ -101,7 +120,7 @@ def get_db():
 @st.cache_data(ttl=30)
 def query_db(sql: str) -> list:
     conn, err = get_db()
-    if err:
+    if err or conn is None:
         return []
     try:
         with conn.cursor() as cur:
@@ -116,8 +135,8 @@ def query_db(sql: str) -> list:
 def db_execute(sql: str, params: tuple = ()) -> str | None:
     """Run a write query. Returns error string or None on success."""
     conn, err = get_db()
-    if err:
-        return err
+    if err or conn is None:
+        return err or "Could not connect to database"
     try:
         with conn.cursor() as cur:
             cur.execute(sql, params)
@@ -201,47 +220,47 @@ bot_cfg = load_bot_config()
 # ─── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown(
-        "<h2 style='color:#ff69b4;margin-bottom:0'>🍰 Cheesecake</h2>"
-        "<p style='color:#ffb6c1;margin-top:0;font-size:0.85em'>Admin Dashboard</p>",
+        "<h2 style='color:#ff69b4;margin-bottom:0;font-size:1.15rem'>&#127856; Cheesecake</h2>"
+        "<p style='color:#ffb6c188;margin-top:2px;font-size:0.72em;text-transform:uppercase;letter-spacing:1.2px'>Admin Dashboard</p>",
         unsafe_allow_html=True,
     )
     st.divider()
     page = st.radio(
         "Navigation",
         [
-            "📊 Overview",
-            "⚙️ Bot Config",
-            "📡 CC Relay Bot",
-            "💬 Trigger Responses",
-            "🏖️ Absences",
-            "🎂 Birthdays",
-            "🎉 Events",
-            "🎁 Giveaways",
-            "⭐ Starboard",
-            "🚨 Emergency Comms",
+            "Overview",
+            "Bot Config",
+            "CC Relay Bot",
+            "Trigger Responses",
+            "Absences",
+            "Birthdays",
+            "Events",
+            "Giveaways",
+            "Starboard",
+            "Emergency Comms",
         ],
         label_visibility="collapsed",
     )
     st.divider()
-    if st.button("🔓 Logout"):
+    if st.button("Log Out", use_container_width=True):
         st.session_state["authenticated"] = False
         st.rerun()
-    st.caption("Changes to settings require a bot restart.")
+    st.caption("Changes require a bot restart.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: Overview
 # ══════════════════════════════════════════════════════════════════════════════
-if page == "📊 Overview":
-    st.title("📊 Overview")
-    st.markdown("Welcome back! Here's a live snapshot of the Cheesecake bot.")
+if page == "Overview":
+    st.title("Overview")
+    st.markdown("Live snapshot of the Cheesecake bot and its database.")
 
     # DB connectivity
     _, db_err = get_db()
     if db_err:
-        st.error(f"⚠️ Database unreachable: {db_err}")
+        st.error(f"Database unreachable: {db_err}")
     else:
-        st.success("✅ Database connected")
+        st.success("Database connected")
 
     st.divider()
 
@@ -257,11 +276,11 @@ if page == "📊 Overview":
                     return row["n"] if row else 0
                 except Exception:
                     return "—"
-            col1.metric("💬 Triggers", _count("trigger_words"))
-            col2.metric("🏖️ Absences", _count("absences"))
-            col3.metric("🎂 Birthdays", _count("birthdays"))
-            col4.metric("🎉 Event Channels", _count("event_channels"))
-            col5.metric("🎁 Giveaways", _count("giveaways"))
+            col1.metric("Triggers", _count("trigger_words"))
+            col2.metric("Absences", _count("absences"))
+            col3.metric("Birthdays", _count("birthdays"))
+            col4.metric("Event Channels", _count("event_channels"))
+            col5.metric("Giveaways", _count("giveaways"))
         conn.close()
 
     st.divider()
@@ -301,14 +320,14 @@ if page == "📊 Overview":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: Bot Config
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "⚙️ Bot Config":
-    st.title("⚙️ Bot Configuration")
+elif page == "Bot Config":
+    st.title("Bot Configuration")
     st.info("Edits are saved to `dashboard_settings.json`. The bot reads overrides from that file on restart.")
 
     cfg_ov = settings.get("config", {})
 
     tab_ch, tab_roles, tab_absence, tab_art = st.tabs(
-        ["📺 Channels", "🎭 Roles", "🏖️ Absence", "🖼️ Starboard & Art"]
+        ["Channels", "Roles", "Absence", "Starboard & Art"]
     )
 
     # ── Channels tab ──
@@ -332,7 +351,7 @@ elif page == "⚙️ Bot Config":
         love_default = "\n".join(str(c) for c in cfg_ov.get("ALLOWED_LOVE_REACTOR_CHANNELS", bot_cfg.get("ALLOWED_LOVE_REACTOR_CHANNELS", [])))
         love_str = st.text_area("Channel IDs — one per line", value=love_default, height=100, key="love_ch")
 
-        if st.button("💾 Save Channels", type="primary", key="save_channels"):
+        if st.button("Save Channels", type="primary", key="save_channels"):
             try:
                 parsed_allowed = [int(x.strip()) for x in allowed_str.splitlines() if x.strip()]
                 parsed_love = [int(x.strip()) for x in love_str.splitlines() if x.strip()]
@@ -359,7 +378,7 @@ elif page == "⚙️ Bot Config":
             step=1, format="%d",
             help="Role applied when a staff member marks themselves absent.",
         )
-        if st.button("💾 Save Roles", type="primary", key="save_roles"):
+        if st.button("Save Roles", type="primary", key="save_roles"):
             settings.setdefault("config", {})["ABSENCE_ROLE_ID"] = absence_role
             save_settings(settings)
 
@@ -377,7 +396,7 @@ elif page == "⚙️ Bot Config":
         restricted_default = "\n".join(str(c) for c in cfg_ov.get("ABSENCE_RESTRICTED_CATEGORIES", bot_cfg.get("ABSENCE_RESTRICTED_CATEGORIES", [])))
         restricted_str = st.text_area("Category IDs — one per line", value=restricted_default, height=100, key="restricted_cats")
 
-        if st.button("💾 Save Absence Settings", type="primary", key="save_absence"):
+        if st.button("Save Absence Settings", type="primary", key="save_absence"):
             try:
                 parsed_restricted = [int(x.strip()) for x in restricted_str.splitlines() if x.strip()]
                 settings.setdefault("config", {}).update({
@@ -405,7 +424,7 @@ elif page == "⚙️ Bot Config":
         if thumbnail_url:
             st.image(thumbnail_url, width=120, caption="Preview")
 
-        if st.button("💾 Save Starboard Settings", type="primary", key="save_starboard"):
+        if st.button("Save Starboard Settings", type="primary", key="save_starboard"):
             settings.setdefault("config", {}).update({
                 "ART_SHOWCASE_ID": art_showcase,
                 "SERVER_FANART_ID": server_fanart,
@@ -419,14 +438,14 @@ elif page == "⚙️ Bot Config":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: CC Relay Bot
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "📡 CC Relay Bot":
-    st.title("📡 CC Relay Bot")
+elif page == "CC Relay Bot":
+    st.title("CC Relay Bot")
     st.markdown("Configure `cc.py` — the DM message relay utility.")
     st.info("Changes are saved to `dashboard_settings.json`. Restart `cc.py` to apply them.")
 
     cc_ov = settings.get("cc", {})
 
-    tab_id, tab_typing = st.tabs(["👤 Identity & Statuses", "⌨️ Typing Simulation"])
+    tab_id, tab_typing = st.tabs(["Identity & Statuses", "Typing Simulation"])
 
     # ── Identity & Statuses ──
     with tab_id:
@@ -452,7 +471,7 @@ elif page == "📡 CC Relay Bot":
             min_value=1, max_value=60, step=1,
         )
 
-        if st.button("💾 Save Identity & Statuses", type="primary", key="save_cc_id"):
+        if st.button("Save Identity & Statuses", type="primary", key="save_cc_id"):
             parsed_statuses = [s.strip() for s in statuses_str.splitlines() if s.strip()]
             if not parsed_statuses:
                 st.error("At least one status is required.")
@@ -488,9 +507,9 @@ elif page == "📡 CC Relay Bot":
             r_max = st.number_input("Random factor max", value=_float_field(cc_ov, "TYPING_RANDOM_MAX", CC_DEFAULTS["TYPING_RANDOM_MAX"]), min_value=0.1, max_value=10.0, step=0.1)
 
         if t_min >= t_max:
-            st.warning("⚠️ Min duration must be less than max duration.")
+            st.warning("Min duration must be less than max duration.")
         if r_min >= r_max:
-            st.warning("⚠️ Random factor min must be less than max.")
+            st.warning("Random factor min must be less than max.")
 
         # Live preview
         import random, math
@@ -501,7 +520,7 @@ elif page == "📡 CC Relay Bot":
             hi = max(t_min, min(base * r_max, t_max))
             st.info(f"Example: an 80-char message will take **{lo:.1f}s – {hi:.1f}s** to \"type\".")
 
-        if st.button("💾 Save Typing Settings", type="primary", key="save_cc_typing"):
+        if st.button("Save Typing Settings", type="primary", key="save_cc_typing"):
             if t_min >= t_max or r_min >= r_max:
                 st.error("Fix the range errors above before saving.")
             else:
@@ -518,14 +537,14 @@ elif page == "📡 CC Relay Bot":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: Trigger Responses
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "💬 Trigger Responses":
-    st.title("💬 Trigger Responses")
+elif page == "Trigger Responses":
+    st.title("Trigger Responses")
     st.markdown("Manage the **database-backed** trigger → response pairs used by `ResponseHandler`.")
 
-    tab_view, tab_add = st.tabs(["📋 View & Remove", "➕ Add New"])
+    tab_view, tab_add = st.tabs(["View & Remove", "Add New"])
 
     with tab_view:
-        if st.button("🔄 Refresh", key="refresh_triggers"):
+        if st.button("Refresh", key="refresh_triggers"):
             st.cache_data.clear()
 
         rows = query_db("SELECT id, trigger_text, response_text FROM trigger_words ORDER BY id")
@@ -536,7 +555,7 @@ elif page == "💬 Trigger Responses":
             st.caption(f"**{len(rows)} trigger(s)** stored in the database")
 
             # Search filter
-            search = st.text_input("🔍 Filter triggers", placeholder="Search by trigger text…")
+            search = st.text_input("Filter triggers", placeholder="Search by trigger text…")
             filtered = [r for r in rows if not search or search.lower() in r["trigger_text"].lower()]
 
             for row in filtered:
@@ -546,7 +565,7 @@ elif page == "💬 Trigger Responses":
                     col_t.code(row["trigger_text"])
                     col_r.markdown("**Response**")
                     col_r.markdown(row["response_text"])
-                    if st.button(f"🗑️ Delete #{row['id']}", key=f"del_trig_{row['id']}"):
+                    if st.button(f"Delete #{row['id']}", key=f"del_trig_{row['id']}"):
                         err = db_execute("DELETE FROM trigger_words WHERE id=%s", (row["id"],))
                         if err:
                             st.error(err)
@@ -560,7 +579,7 @@ elif page == "💬 Trigger Responses":
         new_trigger = st.text_input("Trigger Text", placeholder="e.g. how do i join", help="Case-insensitive partial match.")
         new_response = st.text_area("Response Text", placeholder="Type the bot's reply here…", height=130)
 
-        if st.button("➕ Add Trigger", type="primary", key="add_trigger"):
+        if st.button("Add Trigger", type="primary", key="add_trigger"):
             if not new_trigger.strip():
                 st.error("Trigger text cannot be empty.")
             elif not new_response.strip():
@@ -581,10 +600,10 @@ elif page == "💬 Trigger Responses":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: Absences
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "🏖️ Absences":
-    st.title("🏖️ Absence Tracker")
+elif page == "Absences":
+    st.title("Absence Tracker")
 
-    if st.button("🔄 Refresh", key="refresh_abs"):
+    if st.button("Refresh", key="refresh_abs"):
         st.cache_data.clear()
 
     rows = query_db(
@@ -592,7 +611,7 @@ elif page == "🏖️ Absences":
     )
 
     if not rows:
-        st.success("✅ No active absences right now.")
+        st.success("No active absences right now.")
     else:
         st.markdown(f"**{len(rows)} active absence(s)**")
 
@@ -608,10 +627,10 @@ elif page == "🏖️ Absences":
             "ABSENCE_WARNING_PERIOD",
             bot_cfg.get("ABSENCE_WARNING_PERIOD", 60),
         )
-        df["⚠️ Overdue"] = df["days_absent"] > warning_period
+        df["overdue"] = df["days_absent"] > warning_period
 
         st.dataframe(
-            df[["id", "user_id", "message", "start_time", "days_absent", "last_warned", "⚠️ Overdue"]],
+            df[["id", "user_id", "message", "start_time", "days_absent", "last_warned", "overdue"]],
             use_container_width=True,
             column_config={
                 "id": "ID",
@@ -620,19 +639,19 @@ elif page == "🏖️ Absences":
                 "start_time": st.column_config.DatetimeColumn("Since (UTC)"),
                 "days_absent": "Days Absent",
                 "last_warned": st.column_config.DatetimeColumn("Last Warned"),
-                "⚠️ Overdue": st.column_config.CheckboxColumn("Overdue"),
+                "overdue": st.column_config.CheckboxColumn("Overdue"),
             },
         )
 
-        overdue = df[df["⚠️ Overdue"]]
+        overdue = df[df["overdue"]]
         if not overdue.empty:
-            st.warning(f"⚠️ {len(overdue)} absence(s) exceed the {warning_period}-day warning period.")
+            st.warning(f"{len(overdue)} absence(s) exceed the {warning_period}-day warning period.")
 
         st.divider()
         st.subheader("Remove an Absence")
         st.caption("Use this to manually clear a staff member's absence from the database.")
         del_id = st.number_input("Absence ID", min_value=1, step=1, key="del_abs_id")
-        if st.button("🗑️ Remove Absence", type="secondary", key="btn_del_abs"):
+        if st.button("Remove Absence", type="secondary", key="btn_del_abs"):
             err = db_execute("DELETE FROM absences WHERE id=%s", (int(del_id),))
             if err:
                 st.error(err)
@@ -645,15 +664,15 @@ elif page == "🏖️ Absences":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: Birthdays
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "🎂 Birthdays":
-    st.title("🎂 Birthday Manager")
+elif page == "Birthdays":
+    st.title("Birthday Manager")
 
-    if st.button("🔄 Refresh", key="refresh_bdays"):
+    if st.button("Refresh", key="refresh_bdays"):
         st.cache_data.clear()
 
     rows = query_db("SELECT user_id, birthday FROM birthdays ORDER BY birthday")
 
-    tab_list, tab_edit = st.tabs(["📋 All Birthdays", "✏️ Add / Remove"])
+    tab_list, tab_edit = st.tabs(["All Birthdays", "Add / Remove"])
 
     with tab_list:
         if not rows:
@@ -685,13 +704,13 @@ elif page == "🎂 Birthdays":
                 column_config={
                     "user_id": "User ID",
                     "birthday": "Birthday (DD/MM)",
-                    "days_until": st.column_config.NumberColumn("Days Until 🎉", format="%d days"),
+                    "days_until": st.column_config.NumberColumn("Days Until", format="%d days"),
                 },
             )
 
             soon = df[df["days_until"] <= 7]
             if not soon.empty:
-                st.warning(f"🎂 {len(soon)} birthday(s) within the next 7 days!")
+                st.info(f"{len(soon)} birthday(s) within the next 7 days!")
 
     with tab_edit:
         c1, c2 = st.columns(2)
@@ -700,7 +719,7 @@ elif page == "🎂 Birthdays":
             st.subheader("Add / Update Birthday")
             new_uid = st.text_input("Discord User ID", key="add_bday_uid")
             new_bday = st.text_input("Birthday (DD/MM)", placeholder="25/12", key="add_bday_date")
-            if st.button("➕ Save Birthday", type="primary", key="btn_add_bday"):
+            if st.button("Save Birthday", type="primary", key="btn_add_bday"):
                 try:
                     uid = int(new_uid.strip())
                     datetime.strptime(new_bday.strip(), "%d/%m")
@@ -721,7 +740,7 @@ elif page == "🎂 Birthdays":
         with c2:
             st.subheader("Remove Birthday")
             del_uid = st.text_input("Discord User ID to remove", key="del_bday_uid")
-            if st.button("🗑️ Remove", type="secondary", key="btn_del_bday"):
+            if st.button("Remove", type="secondary", key="btn_del_bday"):
                 try:
                     uid = int(del_uid.strip())
                     err = db_execute("DELETE FROM birthdays WHERE user_id=%s", (uid,))
@@ -738,13 +757,13 @@ elif page == "🎂 Birthdays":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: Events
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "🎉 Events":
-    st.title("🎉 Events")
+elif page == "Events":
+    st.title("Events")
 
-    if st.button("🔄 Refresh", key="refresh_events"):
+    if st.button("Refresh", key="refresh_events"):
         st.cache_data.clear()
 
-    tab_ch, tab_votes, tab_cfg = st.tabs(["📺 Event Channels", "🗳️ Votes", "⚙️ Settings"])
+    tab_ch, tab_votes, tab_cfg = st.tabs(["Event Channels", "Votes", "Settings"])
 
     with tab_ch:
         rows = query_db(
@@ -804,7 +823,7 @@ elif page == "🎉 Events":
             min_value=0, max_value=365, step=1,
         )
 
-        if st.button("💾 Save Event Settings", type="primary", key="save_events"):
+        if st.button("Save Event Settings", type="primary", key="save_events"):
             settings.setdefault("events", {}).update({
                 "EVENTS_CATEGORY_ID": events_cat,
                 "VOTE_LOG_CHANNEL_ID": vote_log,
@@ -817,10 +836,10 @@ elif page == "🎉 Events":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: Giveaways
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "🎁 Giveaways":
-    st.title("🎁 Giveaways")
+elif page == "Giveaways":
+    st.title("Giveaways")
 
-    if st.button("🔄 Refresh", key="refresh_giveaways"):
+    if st.button("Refresh", key="refresh_giveaways"):
         st.cache_data.clear()
 
     rows = query_db(
@@ -846,11 +865,11 @@ elif page == "🎁 Giveaways":
 
         c1, c2, c3 = st.columns(3)
         c1.metric("Total", len(df))
-        c2.metric("🟢 Active", len(active_df))
-        c3.metric("⏱️ Past", len(past_df))
+        c2.metric("Active", len(active_df))
+        c3.metric("Past", len(past_df))
 
         if not active_df.empty:
-            st.subheader("🟢 Active Giveaways")
+            st.subheader("Active Giveaways")
             st.dataframe(
                 active_df[["id", "prizes", "winners", "duration_minutes", "end_time", "host_id", "channel_id"]],
                 use_container_width=True,
@@ -866,7 +885,7 @@ elif page == "🎁 Giveaways":
             )
 
         if not past_df.empty:
-            st.subheader("⏱️ Past Giveaways")
+            st.subheader("Past Giveaways")
             st.dataframe(
                 past_df[["id", "prizes", "winners", "start_time", "end_time", "host_id"]],
                 use_container_width=True,
@@ -884,10 +903,10 @@ elif page == "🎁 Giveaways":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: Starboard
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "⭐ Starboard":
-    st.title("⭐ Starboard")
+elif page == "Starboard":
+    st.title("Starboard")
 
-    if st.button("🔄 Refresh", key="refresh_starboard"):
+    if st.button("Refresh", key="refresh_starboard"):
         st.cache_data.clear()
 
     rows = query_db(
@@ -916,7 +935,7 @@ elif page == "⭐ Starboard":
         c2.metric("Unique Contributors", df["author_id"].nunique())
 
         if not top.empty:
-            st.subheader("🏆 Top 10 Contributors")
+            st.subheader("Top 10 Contributors")
             st.bar_chart(top.set_index("author_id")["entries"], color="#ff69b4")
 
         st.subheader("Recent Entries")
@@ -937,10 +956,10 @@ elif page == "⭐ Starboard":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: Emergency Commissions
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "🚨 Emergency Comms":
-    st.title("🚨 Emergency Commissions")
+elif page == "Emergency Comms":
+    st.title("Emergency Commissions")
 
-    if st.button("🔄 Refresh", key="refresh_ec"):
+    if st.button("Refresh", key="refresh_ec"):
         st.cache_data.clear()
 
     # Try to load the applications table from the DB cog
@@ -960,8 +979,8 @@ elif page == "🚨 Emergency Comms":
 
         c1, c2, c3 = st.columns(3)
         c1.metric("Total", len(df))
-        c2.metric("✅ Accepted", len(df[df["status"] == "accepted"]))
-        c3.metric("❌ Rejected", len(df[df["status"] == "rejected"]))
+        c2.metric("Accepted", len(df[df["status"] == "accepted"]))
+        c3.metric("Rejected", len(df[df["status"] == "rejected"]))
 
         # Status filter
         status_filter = st.selectbox("Filter by status", ["all", "pending", "accepted", "rejected"])
@@ -993,7 +1012,7 @@ elif page == "🚨 Emergency Comms":
         posting_ch = st.number_input("Approved Posting Channel", value=_int_field(ec_ov, "POSTING_CHANNEL_ID", 1245431550942904341), step=1, format="%d")
         logs_ch = st.number_input("Logs Channel", value=_int_field(ec_ov, "LOGS_CHANNEL_ID", 1430575592503378142), step=1, format="%d")
 
-    if st.button("💾 Save Emergency Settings", type="primary", key="save_ec"):
+    if st.button("Save Emergency Settings", type="primary", key="save_ec"):
         settings.setdefault("emergency", {}).update({
             "EMERGENCY_CHANNEL_ID": ec_channel,
             "STAFF_REVIEW_CHANNEL_ID": staff_review,
