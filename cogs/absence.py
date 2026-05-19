@@ -1,12 +1,9 @@
+import asyncio
 import discord
 from discord.ext import commands, tasks
 from datetime import datetime, timedelta
 import pymysql
-import discord
-from discord.ext import commands, tasks
-from datetime import datetime, timedelta
-import pymysql
-import config
+from . import config
 
 # Use config values
 ABSENCE_ROLE_ID = config.ABSENCE_ROLE_ID
@@ -15,6 +12,13 @@ STAFF_ALERT_CHANNEL_ID = config.STAFF_ALERT_CHANNEL_ID
 MIRROR_GUILD_ID = config.MIRROR_GUILD_ID
 MIRROR_CHANNEL_ID = config.MIRROR_CHANNEL_ID
 ABSENCE_WARNING_PERIOD = config.ABSENCE_WARNING_PERIOD
+
+# Categories where absent staff are not allowed to send messages (configurable)
+try:
+    RESTRICTED_CATEGORY_IDS = set(config.ABSENCE_RESTRICTED_CATEGORIES)
+except AttributeError:
+    # Fallback in case config is not updated
+    RESTRICTED_CATEGORY_IDS = {1240456571541258341, 1422566042630230116}
 
 def get_db():
     return pymysql.connect(
@@ -46,12 +50,16 @@ def ensure_absence_table():
         db.close()
 
 
-ensure_absence_table()
 
 
 class Absence(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        # Ensure DB table exists, but don't let failures prevent cog loading
+        try:
+            ensure_absence_table()
+        except Exception as e:
+            print(f"Warning: ensure_absence_table() failed during cog init: {e}")
         self.check_long_absences.start() 
 
     async def get_mirror_channel(self):
@@ -260,6 +268,35 @@ class Absence(commands.Cog):
     async def before_check_long_absences(self):
         await self.bot.wait_until_ready()
 
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        # Ignore DMs and messages from bots
+        if message.author.bot or not message.guild:
+            return
+
+        channel = message.channel
+        # Only enforce in specific categories
+        if getattr(channel, "category_id", None) not in RESTRICTED_CATEGORY_IDS:
+            return
+
+        guild = message.guild
+        absence_role = guild.get_role(ABSENCE_ROLE_ID)
+        # Check if author has the absence role
+        if absence_role and absence_role in message.author.roles:
+            try:
+                await message.delete()
+            except discord.Forbidden:
+                # Bot lacks permissions to delete the message
+                return
+            try:
+                temp = await channel.send(f"<@{message.author.id}> You are on vacation, you should not be working")
+                # delete the temp message after a short delay
+                await asyncio.sleep(8)
+                await temp.delete()
+            except Exception:
+                pass
+
 
 async def setup(bot):
     await bot.add_cog(Absence(bot))
+    print("✅ Loaded cog: absence")

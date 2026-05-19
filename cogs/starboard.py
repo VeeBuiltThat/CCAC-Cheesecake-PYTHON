@@ -3,7 +3,17 @@ from discord.ext import commands
 import pymysql
 from datetime import datetime
 from discord import TextChannel
-from config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, ART_SHOWCASE_ID, SERVER_FANART_ID, STARBOARD_ID, CUSTOM_EMOJI, SMALL_THUMBNAIL
+from . import config
+ART_SHOWCASE_ID = config.ART_SHOWCASE_ID
+SERVER_FANART_ID = config.SERVER_FANART_ID
+STARBOARD_ID = config.STARBOARD_ID
+CUSTOM_EMOJI = config.CUSTOM_EMOJI
+SMALL_THUMBNAIL = config.SMALL_THUMBNAIL
+DB_HOST = config.DB_HOST
+DB_PORT = config.DB_PORT
+DB_USER = config.DB_USER
+DB_PASSWORD = config.DB_PASSWORD
+DB_NAME = config.DB_NAME
 
 def get_db():
     return pymysql.connect(

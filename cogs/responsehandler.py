@@ -2,15 +2,16 @@ import discord
 import random
 import pymysql
 from discord.ext import commands
-from config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, ALLOWED_CHANNELS
+from . import config
+ALLOWED_CHANNELS = config.ALLOWED_CHANNELS
 
 def get_db():
     return pymysql.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME,
+        host=config.DB_HOST,
+        port=config.DB_PORT,
+        user=config.DB_USER,
+        password=config.DB_PASSWORD,
+        database=config.DB_NAME,
         autocommit=True
     )
 
@@ -141,8 +142,10 @@ class ResponseHandler(commands.Cog):
             "what is a kulfi member?": "They are our ko-fi supporters! You can also become one, all the information is in this channel <#1246161217773633556>",
             "how can i become a trusted member?": "Hey there, friend! To become a trusted member you need to go to <#1243586232282382377> and apply. Make sure to read the rules though <:Cheesecake_Love:1243565944090136709>",
             "how can i become a trusted seller?": "Hey there, friend! To become a trusted member you need to go to <#1243586232282382377> and apply. Make sure to read the rules though <:Cheesecake_Love:1243565944090136709>",
-            "how can i become a trusted buyer": "Hey there, friend! To become a trusted member you need to go to <#1243586232282382377> and apply. Make sure to read the rules though <:Cheesecake_Love:1243565944090136709>"
+            "how can i become a trusted buyer": "Hey there, friend! To become a trusted member you need to go to <#1243586232282382377> and apply. Make sure to read the rules though <:Cheesecake_Love:1243565944090136709>",
+            "emergency commissions": "DM <@1420311570172346408> to apply for emergency commissions!"
         }
+        
         for phrase, response in info_responses.items():
             if phrase in lowered:
                 return response

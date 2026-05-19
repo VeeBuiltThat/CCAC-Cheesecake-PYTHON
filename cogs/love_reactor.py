@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
-from config import ALLOWED_LOVE_REACTOR_CHANNELS
+from . import config
+ALLOWED_LOVE_REACTOR_CHANNELS = config.ALLOWED_LOVE_REACTOR_CHANNELS
 
 class LoveReactor(commands.Cog):
     def __init__(self, bot):

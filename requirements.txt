@@ -2,3 +2,6 @@ discord.py
 python-dotenv
 mysql-connector-python
 py-cord==2.6.1
+PyMySQL
+streamlit
+pandas

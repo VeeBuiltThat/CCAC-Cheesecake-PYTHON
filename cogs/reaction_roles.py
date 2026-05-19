@@ -3,7 +3,12 @@ import discord
 from discord.ext import commands
 from typing import Optional
 import pymysql
-from config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
+from . import config
+DB_HOST = config.DB_HOST
+DB_PORT = config.DB_PORT
+DB_USER = config.DB_USER
+DB_PASSWORD = config.DB_PASSWORD
+DB_NAME = config.DB_NAME
 
 def get_db():
     return pymysql.connect(

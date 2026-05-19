@@ -1,550 +1,818 @@
-# cogs/event.py
-from __future__ import annotations
 import discord
 from discord.ext import commands
-from discord import app_commands, Interaction, ui, ButtonStyle
-from typing import Optional, Union, List, Dict, Any
-import mysql.connector
-import asyncio
-import io
-import csv
-from datetime import datetime, timedelta
+from collections import defaultdict, Counter
+from datetime import datetime, timezone, timedelta
+from typing import Optional
+import pymysql
+from . import config
+
+# Configuration constants
+EVENTS_CATEGORY_ID = 1412722642321932298
+VOTE_LOG_CHANNEL_ID = 1459105274332844053   # where vote logs are posted
+COMMANDS_CHANNEL_ID = 1431691032516366337   # where $vote and $addvote must be used
+VOTING_EMOJI_ID: Optional[int] = 1244381480726171749
+VOTING_EMOJI_NAME = "Icon_macaron"
+VOTING_EMOJI_STR = f"<:{VOTING_EMOJI_NAME}:{VOTING_EMOJI_ID}>"
+VOTING_PARTIAL = discord.PartialEmoji(name=VOTING_EMOJI_NAME, id=VOTING_EMOJI_ID)
+MIN_JOIN_DAYS = 30
 
 
-DB_CONFIG = dict(
-    host="gameswaw7.bisecthosting.com",
-    port=3306,
-    user="u416861_UjU6KnDZ2f",
-    password="j2kDVDBzqKmsQTndSZGljhdv",
-    database="s416861_Cheesecake"
-)
-MIN_ACCOUNT_AGE_DAYS = 30
-REQUIRE_VOTER_ID: Optional[int] = 1243576135481294859
-MAX_BUTTONS = 20
-LOG_CHANNEL_ID: Optional[int] = 1431691032516366337
-
-
-TextChannelLike = Union[discord.TextChannel, discord.Thread, discord.DMChannel]
-
-def get_conn() -> Any:
-    return mysql.connector.connect(**DB_CONFIG)
-
-def now_iso() -> str:
-    return datetime.utcnow().isoformat()
-
-def init_db() -> None:
-    con = get_conn()
-    cur = con.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS submissions (
-        submission_id INT AUTO_INCREMENT PRIMARY KEY,
-        guild_id BIGINT NOT NULL,
-        user_id BIGINT NOT NULL,
-        title VARCHAR(255),
-        description TEXT,
-        attachment_url TEXT,
-        approved TINYINT DEFAULT 0,
-        created_at DATETIME,
-        UNIQUE KEY unique_submission (guild_id, user_id)
-    )""")
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS polls (
-        poll_id INT AUTO_INCREMENT PRIMARY KEY,
-        guild_id BIGINT NOT NULL,
-        channel_id BIGINT,
-        message_id BIGINT,
-        title VARCHAR(255),
-        is_open TINYINT DEFAULT 1,
-        created_at DATETIME
-    )""")
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS poll_options (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        poll_id INT NOT NULL,
-        option_index INT NOT NULL,
-        submission_id INT NOT NULL
-    )""")
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS votes (
-        vote_id INT AUTO_INCREMENT PRIMARY KEY,
-        poll_id INT NOT NULL,
-        user_id BIGINT NOT NULL,
-        option_index INT NOT NULL,
-        created_at DATETIME,
-        UNIQUE KEY unique_vote (poll_id, user_id)
-    )""")
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS audit (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        poll_id INT,
-        user_id BIGINT,
-        action VARCHAR(255),
-        detail TEXT,
-        ts DATETIME
-    )""")
-    con.commit()
-    cur.close()
-    con.close()
-
-init_db()
-
-async def log_audit(poll_id: Optional[int], user_id: Optional[int], action: str, detail: str = "") -> None:
-    con = get_conn()
-    cur = con.cursor()
-    cur.execute(
-        "INSERT INTO audit (poll_id, user_id, action, detail, ts) VALUES (%s, %s, %s, %s, %s)",
-        (poll_id, user_id, action, detail, now_iso())
+def get_db():
+    return pymysql.connect(
+        host=config.DB_HOST,
+        port=config.DB_PORT,
+        user=config.DB_USER,
+        password=config.DB_PASSWORD,
+        database=config.DB_NAME,
+        autocommit=True
     )
-    con.commit()
-    cur.close()
-    con.close()
 
-async def send_to_log_channel(guild: discord.Guild, text: str) -> None:
-    if not LOG_CHANNEL_ID:
-        return
-    ch = guild.get_channel(LOG_CHANNEL_ID)
-    if ch and isinstance(ch, (discord.TextChannel, discord.Thread, discord.DMChannel)):
+
+def ensure_event_tables():
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS event_channels (
+            channel_id BIGINT PRIMARY KEY,
+            name VARCHAR(100),
+            created_by BIGINT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS event_votes (
+            id BIGINT PRIMARY KEY AUTO_INCREMENT,
+            guild_id BIGINT NOT NULL,
+            channel_id BIGINT NOT NULL,
+            message_id BIGINT NOT NULL,
+            voter_id BIGINT NOT NULL,
+            voted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        cursor.execute("""
+            DELETE e1 FROM event_votes e1
+            INNER JOIN event_votes e2
+            WHERE e1.channel_id = e2.channel_id AND e1.voter_id = e2.voter_id AND e1.id < e2.id
+        """)
+    except Exception:
+        pass
+    try:
+        cursor.execute("ALTER TABLE event_votes ADD UNIQUE KEY uniq_channel_voter (channel_id, voter_id)")
+    except Exception:
+        pass
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS active_voting_channels (
+            channel_id BIGINT PRIMARY KEY,
+            started_by BIGINT,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS processed_event_commands (
+            message_id BIGINT PRIMARY KEY,
+            command_name VARCHAR(100) NOT NULL,
+            processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.close()
+    db.close()
+
+ensure_event_tables()
+
+
+def is_image_message(message: discord.Message) -> bool:
+    for a in message.attachments:
+        if (a.content_type and a.content_type.startswith("image")) or a.filename.lower().endswith(
+            (".png", ".jpg", ".jpeg", ".gif", ".webp")
+        ):
+            return True
+    for e in message.embeds:
+        if e.type == "image" or getattr(e, "image", None):
+            return True
+    return False
+
+
+class EventCog(commands.Cog):
+    """
+    Event channels & image voting cog.
+
+    Commands:
+    - $newevent <name>               — create a text channel under EVENTS_CATEGORY_ID
+    - $info <message>                — send an informational embed with server icon
+    - $start                         — enable voting in the current channel
+    - $stop                          — disable voting in the current channel
+    - $vote                          — show top voter(s); only usable in VOTE_LOG_CHANNEL_ID
+    - $addvote <user_id> <message_id> — manually add a vote (admin only, in log channel)
+
+    Voting behavior:
+    - Bot adds Icon_macaron to every new image post in active channels.
+    - When a user reacts, their reaction is immediately removed (count stays hidden at 1).
+    - Vote is recorded in DB and logged to VOTE_LOG_CHANNEL_ID.
+    - Members who joined < MIN_JOIN_DAYS ago are rejected silently via DM.
+    - Each user can only vote once per channel.
+    """
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.active_channels: set[int] = set()
+        self.votes: defaultdict[int, Counter] = defaultdict(Counter)
+        self._seen_command_messages: set[int] = set()
+        # Tracks (channel_id, voter_id) pairs currently being processed to prevent race double-fires
+        self._in_flight: set[tuple[int, int]] = set()
+
         try:
-            await ch.send(text)
+            db = get_db()
+            cursor = db.cursor()
+            cursor.execute("SELECT channel_id FROM active_voting_channels")
+            for (cid,) in cursor.fetchall() or []:
+                self.active_channels.add(cid)
+            cursor.execute(
+                "SELECT channel_id, voter_id, COUNT(*) FROM event_votes GROUP BY channel_id, voter_id"
+            )
+            for channel_id, voter_id, cnt in cursor.fetchall() or []:
+                self.votes[channel_id][voter_id] = cnt
+            cursor.close()
+            db.close()
         except Exception:
             pass
 
-_poll_locks: Dict[int, asyncio.Lock] = {}
-def poll_lock_for(poll_id: int) -> asyncio.Lock:
-    if poll_id not in _poll_locks:
-        _poll_locks[poll_id] = asyncio.Lock()
-    return _poll_locks[poll_id]
+    def _claim_command_once(self, ctx: commands.Context, command_name: str) -> bool:
+        message_id = getattr(getattr(ctx, "message", None), "id", None)
+        if message_id is None:
+            return True
 
-async def handle_vote(interaction: Interaction, poll_id: int, option_index: int) -> None:
-    guild = interaction.guild
-    if guild is None:
-        await interaction.response.send_message("This command can only be used in a guild.", ephemeral=True)
-        return
-
-    member: discord.Member
-    if isinstance(interaction.user, discord.Member):
-        member = interaction.user
-    else:
-        try:
-            member = await guild.fetch_member(interaction.user.id)
-        except Exception:
-            await interaction.response.send_message("Failed to verify you as a guild member.", ephemeral=True)
-            return
-
-    if MIN_ACCOUNT_AGE_DAYS:
-        acc_age = datetime.utcnow() - member.created_at.replace(tzinfo=None)
-        if acc_age < timedelta(days=MIN_ACCOUNT_AGE_DAYS):
-            await interaction.response.send_message(f"Your account is too new to vote (minimum {MIN_ACCOUNT_AGE_DAYS} days).", ephemeral=True)
-            await log_audit(poll_id, member.id, "rejected_account_new", f"age_days={acc_age.days}")
-            return
-
-    roles = member.roles or []
-    if REQUIRE_VOTER_ID and REQUIRE_VOTER_ID not in [r.id for r in roles]:
-        await interaction.response.send_message(f"You must have the required role to vote.", ephemeral=True)
-        await log_audit(poll_id, member.id, "rejected_missing_role", f"required_role_id={REQUIRE_VOTER_ID}")
-        return
-
-    lock = poll_lock_for(poll_id)
-    async with lock:
-        con = get_conn()
-        cur = con.cursor()
-
-        cur.execute("SELECT is_open FROM polls WHERE poll_id=%s AND guild_id=%s", (poll_id, guild.id))
-        row = cur.fetchone()
-        if not row:
-            cur.close(); con.close()
-            await interaction.response.send_message("Poll not found.", ephemeral=True)
-            return
-        if row[0] == 0:
-            cur.close(); con.close()
-            await interaction.response.send_message("This poll is closed.", ephemeral=True)
-            return
-
-        cur.execute("SELECT COUNT(*) FROM poll_options WHERE poll_id=%s", (poll_id,))
-        total_opts_row = cur.fetchone()
-        total_opts = total_opts_row[0] if total_opts_row else 0
-        if option_index < 0 or option_index >= total_opts:
-            cur.close(); con.close()
-            await interaction.response.send_message("Invalid option.", ephemeral=True)
-            return
+        if message_id in self._seen_command_messages:
+            return False
 
         try:
-            cur.execute(
-                """
-                INSERT INTO votes (poll_id, user_id, option_index, created_at)
-                VALUES (%s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE option_index=VALUES(option_index), created_at=VALUES(created_at)
-                """,
-                (poll_id, member.id, option_index, now_iso())
+            db = get_db()
+            cursor = db.cursor()
+            cursor.execute(
+                "INSERT IGNORE INTO processed_event_commands (message_id, command_name) VALUES (%s, %s)",
+                (message_id, command_name),
             )
-            con.commit()
-        except Exception as e:
-            con.rollback(); cur.close(); con.close()
-            await interaction.response.send_message("Failed to record vote; try again later.", ephemeral=True)
-            await log_audit(poll_id, member.id, "vote_error", str(e))
-            return
+            inserted = cursor.rowcount == 1
+            cursor.close()
+            db.close()
+            if not inserted:
+                return False
+        except Exception:
+            if message_id in self._seen_command_messages:
+                return False
 
-        cur.execute("""
-            SELECT s.title FROM poll_options p
-            JOIN submissions s ON p.submission_id = s.submission_id
-            WHERE p.poll_id=%s AND p.option_index=%s
-        """, (poll_id, option_index))
-        sub = cur.fetchone()
-        sub_title = sub[0] if sub else f"Option {option_index+1}"
+        self._seen_command_messages.add(message_id)
+        if len(self._seen_command_messages) > 10000:
+            self._seen_command_messages.clear()
+        return True
 
-        cur.close(); con.close()
-        await interaction.response.send_message(f"✅ Your vote for **{sub_title}** was recorded.", ephemeral=True)
-        await log_audit(poll_id, member.id, "vote_cast", f"option={option_index}")
-        await send_to_log_channel(guild, f"[VOTE] {member} voted in poll {poll_id} for '{sub_title}'")
+    # -------------------------
+    # Internal vote recorder
+    # -------------------------
+    async def _record_vote(
+        self,
+        guild: discord.Guild,
+        channel_id: int,
+        message: discord.Message,
+        member: discord.Member,
+        source: str = "reaction",
+    ) -> tuple[bool, str]:
+        """
+        Attempt to record a vote for `member` on `message` in `channel_id`.
 
-class VoteView(ui.View):
-    def __init__(self, poll_id: int, option_count: int):
-        super().__init__(timeout=None)
-        self.poll_id = poll_id
-        for i in range(option_count):
-            btn = ui.Button(label=str(i + 1), style=ButtonStyle.secondary, custom_id=f"vote:{poll_id}:{i}")
+        Returns (success: bool, reason: str).
+        `source` is either "reaction" or "manual" — used only for log embed labeling.
+        """
+        # Enforce join age
+        if member.joined_at is None or (datetime.now(timezone.utc) - member.joined_at) < timedelta(days=MIN_JOIN_DAYS):
+            return False, f"Member hasn't been in the server for {MIN_JOIN_DAYS} days."
 
-            async def button_callback(interaction: Interaction, idx: int = i) -> None:
-                await handle_vote(interaction, poll_id, idx)
-
-            btn.callback = button_callback
-            self.add_item(btn)
-
-class EventCog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-
-    @app_commands.command(name="submit", description="Submit an image for the event (one submission per user).")
-    @app_commands.describe(title="Title of your artwork", description="Short description (optional)")
-    async def submit(self, interaction: Interaction, title: str, description: str = "") -> None:
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("Submissions must be made in a server (not in DMs).", ephemeral=True)
-            return
-
-        if isinstance(interaction.user, discord.Member):
-            member = interaction.user
-        else:
-            try:
-                member = await guild.fetch_member(interaction.user.id)
-            except Exception:
-                await interaction.response.send_message("Failed to verify you as a guild member.", ephemeral=True)
-                return
-
-        attachments: List[discord.Attachment] = getattr(interaction, "attachments", None) or getattr(getattr(interaction, "message", None), "attachments", None) or []
-        if not attachments:
-            await interaction.response.send_message("Please attach an image file to your submission.", ephemeral=True)
-            return
-        att = attachments[0] 
-
-        att = attachments[0]
-  
-        content_type = getattr(att, "content_type", None)
-        if content_type and not content_type.startswith("image/"):
-            await interaction.response.send_message("Only image attachments are allowed.", ephemeral=True)
-            return
-
-
-        if MIN_ACCOUNT_AGE_DAYS:
-            acc_age = datetime.utcnow() - member.created_at.replace(tzinfo=None)
-            if acc_age < timedelta(days=MIN_ACCOUNT_AGE_DAYS):
-                await interaction.response.send_message(
-                    f"Your account is too new to submit (minimum {MIN_ACCOUNT_AGE_DAYS} days).", ephemeral=True
-                )
-                await log_audit(None, member.id, "submit_rejected_account_new", f"age_days={acc_age.days}")
-                return
-
-        con = get_conn()
-        cur = con.cursor()
-
-        cur.execute("SELECT 1 FROM submissions WHERE guild_id=%s AND user_id=%s", (guild.id, member.id))
-        if cur.fetchone():
-            con.close()
-            await interaction.response.send_message("You already submitted an entry for this guild.", ephemeral=True)
-            return
-
-        attachment_url = getattr(att, "url", None) or getattr(att, "proxy_url", None)
-        cur.execute(
-            "INSERT INTO submissions (guild_id, user_id, title, description, attachment_url, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (guild.id, member.id, title, description, attachment_url, now_iso()),
-        )
-        con.commit()
-        con.close()
-
-        await interaction.response.send_message("✅ Submission received — awaiting admin approval.", ephemeral=True)
-        await log_audit(None, member.id, "submission_created", title)
-        await send_to_log_channel(guild, f"New submission by {member} — {title} — {attachment_url}")
-
-    @app_commands.command(name="list_submissions", description="List pending submissions (admins only).")
-    async def list_submissions(self, interaction: Interaction) -> None:
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("Use this command in a server.", ephemeral=True)
-            return
-
-        if not (isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild):
-            await interaction.response.send_message("Admins only (Manage Server permission required).", ephemeral=True)
-            return
-
-        con = get_conn()
-        cur = con.cursor()
-        cur.execute(
-            "SELECT submission_id, user_id, title, description, attachment_url, created_at FROM submissions WHERE guild_id=? AND approved=0 ORDER BY created_at ASC",
-            (guild.id,),
-        )
-        rows = cur.fetchall()
-        con.close()
-
-        if not rows:
-            await interaction.response.send_message("No pending submissions.", ephemeral=True)
-            return
-
-        lines = []
-        for r in rows:
-            sid, uid, title, desc, url, ts = r
-            lines.append(f"[{sid}] {title} — by <@{uid}> — {url}")
-
-        text = "\n".join(lines)
-        if len(text) > 1900:
-            text = text[:1900] + "\n...(truncated)"
-        await interaction.response.send_message(f"Pending submissions:\n```\n{text}\n```", ephemeral=True)
-
-    @app_commands.command(name="approve_submission", description="Approve a submission (admins only).")
-    @app_commands.describe(submission_id="ID of the submission to approve")
-    async def approve_submission(self, interaction: Interaction, submission_id: int) -> None:
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("Use this command in a server.", ephemeral=True)
-            return
-
-        if not (isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild):
-            await interaction.response.send_message("Admins only.", ephemeral=True)
-            return
-
-        con = get_conn()
-        cur = con.cursor()
-        cur.execute("UPDATE submissions SET approved=1 WHERE submission_id=? AND guild_id=?", (submission_id, guild.id))
-        con.commit()
-        ok = cur.rowcount > 0
-        con.close()
-
-        if ok:
-            await interaction.response.send_message(f"✅ Submission #{submission_id} approved.", ephemeral=True)
-            await log_audit(None, interaction.user.id, "submission_approved", f"id={submission_id}")
-            await send_to_log_channel(guild, f"Submission #{submission_id} approved by {interaction.user}")
-        else:
-            await interaction.response.send_message("Submission not found.", ephemeral=True)
-
-    @app_commands.command(name="reject_submission", description="Reject and remove a submission (admins only).")
-    @app_commands.describe(submission_id="ID of the submission to reject", reason="Optional reason")
-    async def reject_submission(self, interaction: Interaction, submission_id: int, reason: str = "") -> None:
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("Use this command in a server.", ephemeral=True)
-            return
-
-        if not (isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild):
-            await interaction.response.send_message("Admins only.", ephemeral=True)
-            return
-
-        con = get_conn()
-        cur = con.cursor()
-        cur.execute("SELECT user_id, attachment_url FROM submissions WHERE submission_id=? AND guild_id=?", (submission_id, guild.id))
-        row = cur.fetchone()
-        if not row:
-            con.close()
-            await interaction.response.send_message("Submission not found.", ephemeral=True)
-            return
-
-        cur.execute("DELETE FROM submissions WHERE submission_id=? AND guild_id=?", (submission_id, guild.id))
-        con.commit()
-        con.close()
-
-        await interaction.response.send_message(f"Submission #{submission_id} rejected and removed.", ephemeral=True)
-        await log_audit(None, interaction.user.id, "submission_rejected", f"id={submission_id} reason={reason}")
-        await send_to_log_channel(guild, f"Submission #{submission_id} rejected by {interaction.user}. Reason: {reason}")
-
-    @app_commands.command(name="start_voting", description="Create a voting poll from approved submissions (admins only).")
-    @app_commands.describe(title="Title for the voting poll")
-    async def start_voting(self, interaction: Interaction, title: str) -> None:
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("Use this command in a server.", ephemeral=True)
-            return
-
-        if not (isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild):
-            await interaction.response.send_message("Admins only.", ephemeral=True)
-            return
-
-        con = get_conn()
-        cur = con.cursor()
-        cur.execute("SELECT submission_id, user_id, title, attachment_url FROM submissions WHERE guild_id=? AND approved=1 ORDER BY created_at ASC", (guild.id,))
-        rows = cur.fetchall()
-
-        if not rows:
-            con.close()
-            await interaction.response.send_message("No approved submissions to start voting.", ephemeral=True)
-            return
-
-        if len(rows) > MAX_BUTTONS:
-            con.close()
-            await interaction.response.send_message(f"Too many approved submissions ({len(rows)}). Increase MAX_BUTTONS or reduce entries.", ephemeral=True)
-            return
-
-        cur.execute("INSERT INTO polls (guild_id, channel_id, title, created_at) VALUES (?, ?, ?, ?)", (guild.id, interaction.channel.id if interaction.channel else None, title, now_iso()))
-        poll_id = cur.lastrowid
-
-        for idx, r in enumerate(rows):
-            submission_id = r[0]
-            cur.execute("INSERT INTO poll_options (poll_id, option_index, submission_id) VALUES (?, ?, ?)", (poll_id, idx, submission_id))
-
-        con.commit()
-
-        description_lines = [f"**{i+1}.** {r[2]} — <@{r[1]}>" for i, r in enumerate(rows)]
-        embed = discord.Embed(title=f"🎨 {title}", description="\n".join(description_lines))
-        embed.set_footer(text="Click the number button to cast your single vote (one vote per user).")
-
-        first_img = rows[0][3] if rows[0][3] else None
-        if first_img:
-            embed.set_image(url=first_img)
-
-        if poll_id is None:
-            await interaction.response.send_message("Failed to create poll.", ephemeral=True)
-            return
-
-        view = VoteView(int(poll_id), len(rows))
-
+        # Block duplicate concurrent calls for the same (channel, voter) pair
+        lock_key = (channel_id, member.id)
+        if lock_key in self._in_flight:
+            return False, "Already voted in this channel."
+        self._in_flight.add(lock_key)
 
         try:
-            msg = await interaction.channel.send(embed=embed, view=view)  
-            cur.execute("UPDATE polls SET message_id=? WHERE poll_id=?", (msg.id, poll_id))
-            con.commit()
+            return await self._do_record_vote(guild, channel_id, message, member, source)
+        finally:
+            self._in_flight.discard(lock_key)
+
+    async def _do_record_vote(
+        self,
+        guild: discord.Guild,
+        channel_id: int,
+        message: discord.Message,
+        member: discord.Member,
+        source: str,
+    ) -> tuple[bool, str]:
+        try:
+            db = get_db()
+            cursor = db.cursor()
+            cursor.execute(
+                "SELECT 1 FROM event_votes WHERE channel_id = %s AND voter_id = %s LIMIT 1",
+                (channel_id, member.id)
+            )
+            already = cursor.fetchone()
+            cursor.close()
+            db.close()
         except Exception:
+            already = None
 
-            await interaction.response.send_message("Failed to post poll message in channel.", ephemeral=True)
-            con.close()
+        if already:
+            return False, "Already voted in this channel."
+
+        # Insert vote
+        inserted = False
+        try:
+            db = get_db()
+            cursor = db.cursor()
+            cursor.execute(
+                "INSERT IGNORE INTO event_votes (guild_id, channel_id, message_id, voter_id) VALUES (%s, %s, %s, %s)",
+                (guild.id, channel_id, message.id, member.id)
+            )
+            inserted = cursor.rowcount == 1
+            cursor.close()
+            db.close()
+        except Exception:
+            inserted = False
+
+        if not inserted:
+            return False, "Already voted in this channel."
+
+        # Update in-memory tally
+        self.votes[channel_id][member.id] += 1
+
+        # Log to vote log channel
+        log_channel = guild.get_channel(VOTE_LOG_CHANNEL_ID)
+        if log_channel is None:
+            log_channel = await guild.fetch_channel(VOTE_LOG_CHANNEL_ID) if guild else None  # type: ignore[assignment]
+        if isinstance(log_channel, (discord.TextChannel, discord.Thread)):
+            try:
+                msg_link = f"https://discord.com/channels/{guild.id}/{channel_id}/{message.id}"
+                label = "New Vote" if source == "reaction" else "Vote Added Manually"
+                embed = discord.Embed(
+                    title=label,
+                    description=(
+                        f"**User:** <@{member.id}>\n"
+                        f"**Channel:** <#{channel_id}>\n"
+                        f"**Message:** [jump to message]({msg_link})"
+                    ),
+                    color=discord.Color.blue() if source == "reaction" else discord.Color.purple()
+                )
+                for a in message.attachments:
+                    if a.content_type and a.content_type.startswith("image"):
+                        embed.set_image(url=a.url)
+                        break
+                await log_channel.send(embed=embed)
+            except Exception:
+                pass
+
+        return True, "Vote recorded."
+
+    # -------------------------
+    # $newevent
+    # -------------------------
+    @commands.command(name="newevent")
+    @commands.has_permissions(manage_channels=True)
+    async def new_event(self, ctx: commands.Context, *, name: str):
+        """Create a new text channel under EVENTS_CATEGORY_ID."""
+        if not self._claim_command_once(ctx, "newevent"):
             return
 
-        con.close()
-        await interaction.response.send_message(f"✅ Poll #{poll_id} created with {len(rows)} options.", ephemeral=True)
-        await log_audit(poll_id, interaction.user.id, "poll_created", f"title={title} options={len(rows)}")
-        await send_to_log_channel(guild, f"Poll #{poll_id} started by {interaction.user} — {title}")
-
- 
-    @app_commands.command(name="reveal_results", description="Reveal and publish results for a poll (admins only).")
-    @app_commands.describe(poll_id="ID of the poll to reveal")
-    async def reveal_results(self, interaction: Interaction, poll_id: int) -> None:
-        guild = interaction.guild
+        guild = ctx.guild
         if guild is None:
-            await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+            await ctx.send("This command must be used in a server.")
             return
 
-        if not (isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild):
-            await interaction.response.send_message("Admins only.", ephemeral=True)
+        category = guild.get_channel(EVENTS_CATEGORY_ID)
+        if category is None or not isinstance(category, discord.CategoryChannel):
+            await ctx.send("Event category not found. Please check configuration.")
             return
 
-        con = get_conn()
-        cur = con.cursor()
+        channel_name = name.lower().replace(" ", "-")[:100]
+        channel = await guild.create_text_channel(
+            name=channel_name,
+            category=category,
+            reason=f"Event channel created by {ctx.author} via $newevent"
+        )
 
-        cur.execute("UPDATE polls SET is_open=0 WHERE poll_id=? AND guild_id=?", (poll_id, guild.id))
-        con.commit()
+        await ctx.send(embed=discord.Embed(
+            title="Event Created",
+            description=f"Created event channel {channel.mention}",
+            color=discord.Color.green()
+        ))
 
-        cur.execute("SELECT option_index, COUNT(*) FROM votes WHERE poll_id=? GROUP BY option_index", (poll_id,))
-        counts_map = {r[0]: r[1] for r in cur.fetchall()}
+        try:
+            db = get_db()
+            cursor = db.cursor()
+            cursor.execute(
+                "REPLACE INTO event_channels (channel_id, name, created_by) VALUES (%s, %s, %s)",
+                (channel.id, channel_name, ctx.author.id)
+            )
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
 
-        cur.execute("SELECT option_index, submission_id FROM poll_options WHERE poll_id=? ORDER BY option_index ASC", (poll_id,))
-        options = cur.fetchall()
+        start_embed = discord.Embed(
+            title=f"Event: {name}",
+            description="Voting is currently inactive. Use `$start` in this channel to begin voting.",
+            color=discord.Color.blurple()
+        )
+        if guild.icon:
+            start_embed.set_thumbnail(url=guild.icon.url)
+        await channel.send(embed=start_embed)
 
-        lines = []
-        for idx, (opt_idx, submission_id) in enumerate(options):
-            cur.execute("SELECT user_id, title, attachment_url FROM submissions WHERE submission_id=?", (submission_id,))
-            s = cur.fetchone()
-            if not s:
-                continue
-            author_id, title, attachment_url = s
-            votes = counts_map.get(opt_idx, 0)
-            lines.append(f"**{idx+1}. {title}** — <@{author_id}> — {votes} votes")
-
-        total_votes = sum(counts_map.values())
-        embed = discord.Embed(title=f"🏆 Results — Poll #{poll_id}", description="\n".join(lines))
-        embed.set_footer(text=f"Total votes: {total_votes}")
-        await interaction.channel.send(embed=embed) 
-        con.close()
-
-        await interaction.response.send_message("✅ Results published and poll closed.", ephemeral=True)
-        await log_audit(poll_id, interaction.user.id, "poll_revealed", f"votes={total_votes}")
-        await send_to_log_channel(guild, f"Poll #{poll_id} results revealed by {interaction.user}")
-
-    @app_commands.command(name="results", description="Show current hidden results for a poll (admins only).")
-    @app_commands.describe(poll_id="ID of the poll")
-    async def results(self, interaction: Interaction, poll_id: int) -> None:
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+    # -------------------------
+    # $info
+    # -------------------------
+    @commands.command(name="info")
+    @commands.has_permissions(manage_messages=True)
+    async def info(self, ctx: commands.Context, *, message: str):
+        """Send an informational embed with the server icon as thumbnail."""
+        if not self._claim_command_once(ctx, "info"):
             return
 
-        if not (isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild):
-            await interaction.response.send_message("Admins only.", ephemeral=True)
+        guild = ctx.guild
+        embed = discord.Embed(title="Event Info", description=message, color=discord.Color.teal())
+        if guild and guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+        await ctx.send(embed=embed)
+
+    # -------------------------
+    # $start
+    # -------------------------
+    @commands.command(name="start")
+    @commands.has_permissions(manage_channels=True)
+    async def start_voting(self, ctx: commands.Context):
+        """Enable voting in the current channel."""
+        if not self._claim_command_once(ctx, "start"):
             return
 
-        con = get_conn()
-        cur = con.cursor()
-        cur.execute("SELECT option_index, COUNT(*) FROM votes WHERE poll_id=? GROUP BY option_index", (poll_id,))
-        counts_map = {r[0]: r[1] for r in cur.fetchall()}
-
-        cur.execute("SELECT option_index, submission_id FROM poll_options WHERE poll_id=? ORDER BY option_index ASC", (poll_id,))
-        options = cur.fetchall()
-
-        lines = []
-        for idx, (opt_idx, submission_id) in enumerate(options):
-            cur.execute("SELECT title FROM submissions WHERE submission_id=?", (submission_id,))
-            s = cur.fetchone()
-            if not s:
-                continue
-            title = s[0]
-            votes = counts_map.get(opt_idx, 0)
-            lines.append(f"{idx+1}. {title} — {votes} votes")
-
-        total_votes = sum(counts_map.values())
-        text = "\n".join(lines) + f"\nTotal votes: {total_votes}"
-        if len(text) > 1900:
-            text = text[:1900] + "\n...(truncated)"
-
-        con.close()
-        await interaction.response.send_message(f"```\n{text}\n```", ephemeral=True)
-
-    @app_commands.command(name="export_votes", description="Export votes CSV for a poll (admins only).")
-    @app_commands.describe(poll_id="ID of the poll to export")
-    async def export_votes(self, interaction: Interaction, poll_id: int) -> None:
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+        channel = ctx.channel
+        if not isinstance(channel, discord.TextChannel):
+            await ctx.send("This command must be used in a text channel.")
             return
 
-        if not (isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild):
-            await interaction.response.send_message("Admins only.", ephemeral=True)
+        self.active_channels.add(channel.id)
+
+        # Persist
+        try:
+            db = get_db()
+            cursor = db.cursor()
+            cursor.execute(
+                "REPLACE INTO active_voting_channels (channel_id, started_by) VALUES (%s, %s)",
+                (channel.id, ctx.author.id)
+            )
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+
+        await ctx.send(embed=discord.Embed(
+            title="Voting Started",
+            description=(
+                f"Voting is now active in {channel.mention}. "
+                f"Only members in the server for {MIN_JOIN_DAYS}+ days can vote."
+            ),
+            color=discord.Color.green()
+        ))
+
+        # React to recent image messages so existing submissions are covered
+        async for msg in channel.history(limit=200):
+            if is_image_message(msg):
+                try:
+                    await msg.add_reaction(VOTING_PARTIAL)
+                except Exception:
+                    pass
+
+    # -------------------------
+    # $stop
+    # -------------------------
+    @commands.command(name="stop")
+    @commands.has_permissions(manage_channels=True)
+    async def stop_voting(self, ctx: commands.Context):
+        """Disable voting in the current channel."""
+        if not self._claim_command_once(ctx, "stop"):
             return
 
-        con = get_conn()
-        cur = con.cursor()
-        cur.execute("SELECT poll_id, user_id, option_index, created_at FROM votes WHERE poll_id=?", (poll_id,))
-        rows = cur.fetchall()
-        con.close()
+        channel = ctx.channel
+        if not isinstance(channel, discord.TextChannel):
+            await ctx.send("This command must be used in a text channel.")
+            return
+
+        if channel.id not in self.active_channels:
+            await ctx.send("Voting is not active in this channel.")
+            return
+
+        self.active_channels.remove(channel.id)
+        try:
+            db = get_db()
+            cursor = db.cursor()
+            cursor.execute("DELETE FROM active_voting_channels WHERE channel_id = %s", (channel.id,))
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+
+        await ctx.send(embed=discord.Embed(
+            title="Voting Stopped",
+            description=f"Voting has been stopped in {channel.mention}.",
+            color=discord.Color.orange()
+        ))
+
+    # -------------------------
+    # $vote  (log channel only)
+    # -------------------------
+    @commands.command(name="vote")
+    async def show_top_voter(self, ctx: commands.Context, channel_id: Optional[int] = None):
+        """Show current top voter(s). Only usable inside the vote log channel."""
+        if not self._claim_command_once(ctx, "vote"):
+            return
+
+        # Restrict to commands channel only
+        if ctx.channel.id != COMMANDS_CHANNEL_ID:
+            cmd_ch = ctx.guild.get_channel(COMMANDS_CHANNEL_ID) if ctx.guild else None
+            mention = cmd_ch.mention if isinstance(cmd_ch, discord.TextChannel) else f"<#{COMMANDS_CHANNEL_ID}>"
+            await ctx.send(embed=discord.Embed(
+                title="Wrong Channel",
+                description=f"This command can only be used in {mention}.",
+                color=discord.Color.red()
+            ))
+            return
+
+        # Resolve target channel
+        if channel_id is not None:
+            if ctx.guild is None:
+                await ctx.send("This command must be used in a server.")
+                return
+            target_channel = ctx.guild.get_channel(channel_id)
+            if target_channel is None or not isinstance(target_channel, (discord.TextChannel, discord.Thread)):
+                await ctx.send(embed=discord.Embed(
+                    title="Channel Not Found",
+                    description=f"No text/thread channel found with ID `{channel_id}`.",
+                    color=discord.Color.red()
+                ))
+                return
+        else:
+            await ctx.send(embed=discord.Embed(
+                title="Missing Argument",
+                description="Please provide a channel ID: `$vote <channel_id>`",
+                color=discord.Color.red()
+            ))
+            return
+
+        # Fetch votes from DB
+        try:
+            db = get_db()
+            cursor = db.cursor()
+            cursor.execute(
+                "SELECT voter_id, COUNT(*) as cnt FROM event_votes WHERE channel_id = %s GROUP BY voter_id",
+                (target_channel.id,)
+            )
+            rows = cursor.fetchall() or []
+            cursor.close()
+            db.close()
+        except Exception:
+            rows = []
 
         if not rows:
-            await interaction.response.send_message("No votes found for that poll.", ephemeral=True)
+            await ctx.send("No votes recorded for that channel yet.")
             return
 
-        out = io.StringIO()
-        writer = csv.writer(out)
-        writer.writerow(["poll_id", "user_id", "option_index", "created_at"])
-        writer.writerows(rows)
-        out.seek(0)
-        file_bytes = out.getvalue().encode("utf-8")
-        discord_file = discord.File(io.BytesIO(file_bytes), filename=f"poll_{poll_id}_votes.csv")
-        await interaction.response.send_message("Export:", file=discord_file, ephemeral=True)
-        await log_audit(poll_id, interaction.user.id, "export_votes", f"count={len(rows)}")
+        top_count = max(r[1] for r in rows)
+        top_users = [r[0] for r in rows if r[1] == top_count]
+        mentions = ", ".join(f"<@{uid}> ({top_count})" for uid in top_users)
+
+        event_name = None
+        try:
+            db = get_db()
+            cursor = db.cursor()
+            cursor.execute("SELECT name FROM event_channels WHERE channel_id = %s", (target_channel.id,))
+            res = cursor.fetchone()
+            cursor.close()
+            db.close()
+            if res:
+                event_name = res[0]
+        except Exception:
+            pass
+
+        title = f"Top Voter(s) — {event_name}" if event_name else f"Top Voter(s) for {target_channel.mention}"
+        await ctx.send(embed=discord.Embed(title=title, description=mentions, color=discord.Color.gold()))
+
+    # -------------------------
+    # $leaderboard  (manage channels, commands channel only)
+    # -------------------------
+    @commands.command(name="leaderboard")
+    @commands.has_permissions(manage_channels=True)
+    async def leaderboard(self, ctx: commands.Context, channel_id: Optional[int] = None):
+        """Show top 10 voters for a channel. Usage: $leaderboard <channel_id>"""
+        if not self._claim_command_once(ctx, "leaderboard"):
+            return
+
+        # Restrict to commands channel only
+        if ctx.channel.id != COMMANDS_CHANNEL_ID:
+            cmd_ch = ctx.guild.get_channel(COMMANDS_CHANNEL_ID) if ctx.guild else None
+            mention = cmd_ch.mention if isinstance(cmd_ch, discord.TextChannel) else f"<#{COMMANDS_CHANNEL_ID}>"
+            await ctx.send(embed=discord.Embed(
+                title="Wrong Channel",
+                description=f"This command can only be used in {mention}.",
+                color=discord.Color.red()
+            ))
+            return
+
+        if channel_id is None:
+            await ctx.send(embed=discord.Embed(
+                title="Missing Argument",
+                description="Please provide a channel ID: `$leaderboard <channel_id>`",
+                color=discord.Color.red()
+            ))
+            return
+
+        if ctx.guild is None:
+            await ctx.send("This command must be used in a server.")
+            return
+
+        target_channel = ctx.guild.get_channel(channel_id)
+        if target_channel is None or not isinstance(target_channel, (discord.TextChannel, discord.Thread)):
+            await ctx.send(embed=discord.Embed(
+                title="Channel Not Found",
+                description=f"No text/thread channel found with ID `{channel_id}`.",
+                color=discord.Color.red()
+            ))
+            return
+
+        # Fetch top 10 from DB ordered by vote count descending
+        try:
+            db = get_db()
+            cursor = db.cursor()
+            cursor.execute(
+                """
+                SELECT message_id, COUNT(*) as cnt
+                FROM event_votes
+                WHERE channel_id = %s
+                GROUP BY message_id
+                ORDER BY cnt DESC
+                LIMIT 10
+                """,
+                (target_channel.id,)
+            )
+            rows = cursor.fetchall() or []
+            cursor.close()
+            db.close()
+        except Exception:
+            rows = []
+
+        if not rows:
+            await ctx.send("No votes recorded for that channel yet.")
+            return
+
+        # Fetch event name if available
+        event_name = None
+        try:
+            db = get_db()
+            cursor = db.cursor()
+            cursor.execute("SELECT name FROM event_channels WHERE channel_id = %s", (target_channel.id,))
+            res = cursor.fetchone()
+            cursor.close()
+            db.close()
+            if res:
+                event_name = res[0]
+        except Exception:
+            pass
+
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        lines = []
+        for i, (message_id, cnt) in enumerate(rows, start=1):
+            prefix = medals.get(i, f"**#{i}**")
+            lines.append(f"{prefix} https://discord.com/channels/{ctx.guild.id}/{target_channel.id}/{message_id} — {cnt} vote{'s' if cnt != 1 else ''}")
+
+        title = f"Leaderboard — {event_name}" if event_name else f"Leaderboard for {target_channel.mention}"
+        embed = discord.Embed(
+            title=title,
+            description="\n".join(lines),
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text=f"Showing top {len(rows)} winner(s)")
+        await ctx.send(embed=embed)
+
+    # -------------------------
+    # $addvote  (admin, commands channel only)
+    # -------------------------
+    @commands.command(name="addvote")
+    @commands.has_permissions(administrator=True)
+    async def add_vote(self, ctx: commands.Context, user_id: int, message_id: int):
+        """
+        Manually add a vote for a user on a specific message.
+        Usage: $addvote <user_id> <message_id>
+        Must be used in the vote log channel. The message must belong to an active voting channel.
+        """
+        if not self._claim_command_once(ctx, "addvote"):
+            return
+
+        # Restrict to commands channel
+        if ctx.channel.id != COMMANDS_CHANNEL_ID:
+            cmd_ch = ctx.guild.get_channel(COMMANDS_CHANNEL_ID) if ctx.guild else None
+            mention = cmd_ch.mention if isinstance(cmd_ch, discord.TextChannel) else f"<#{COMMANDS_CHANNEL_ID}>"
+            await ctx.send(embed=discord.Embed(
+                title="Wrong Channel",
+                description=f"This command can only be used in {mention}.",
+                color=discord.Color.red()
+            ))
+            return
+
+        guild = ctx.guild
+        if guild is None:
+            await ctx.send("This command must be used in a server.")
+            return
+
+        # Resolve member
+        member = guild.get_member(user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user_id)
+            except Exception:
+                member = None
+
+        if member is None:
+            await ctx.send(embed=discord.Embed(
+                title="User Not Found",
+                description=f"No member found with ID `{user_id}`.",
+                color=discord.Color.red()
+            ))
+            return
+
+        # Enforce join age
+        if member.joined_at is None or (datetime.now(timezone.utc) - member.joined_at) < timedelta(days=MIN_JOIN_DAYS):
+            await ctx.send(embed=discord.Embed(
+                title="Ineligible Member",
+                description=f"{member.mention} hasn't been in the server for {MIN_JOIN_DAYS} days and cannot be voted for.",
+                color=discord.Color.red()
+            ))
+            return
+
+        # Find the message — search all active voting channels
+        target_message: Optional[discord.Message] = None
+        target_channel_id: Optional[int] = None
+
+        for cid in self.active_channels:
+            ch = guild.get_channel(cid)
+            if ch is None or not hasattr(ch, "fetch_message"):
+                continue
+            try:
+                target_message = await ch.fetch_message(message_id)  # type: ignore[call-arg]
+                target_channel_id = cid
+                break
+            except Exception:
+                continue
+
+        if target_message is None or target_channel_id is None:
+            await ctx.send(embed=discord.Embed(
+                title="Message Not Found",
+                description=(
+                    f"Could not find message `{message_id}` in any active voting channel. "
+                    "Make sure voting is started in that channel."
+                ),
+                color=discord.Color.red()
+            ))
+            return
+
+        # Verify the message contains an image
+        if not is_image_message(target_message):
+            await ctx.send(embed=discord.Embed(
+                title="Not an Image Post",
+                description="The target message does not contain an image and cannot receive votes.",
+                color=discord.Color.red()
+            ))
+            return
+
+        # Record the vote
+        success, reason = await self._record_vote(
+            guild=guild,
+            channel_id=target_channel_id,
+            message=target_message,
+            member=member,
+            source="manual",
+        )
+
+        if success:
+            await ctx.send(embed=discord.Embed(
+                title="Vote Added",
+                description=(
+                    f"Successfully added a vote for {member.mention} on "
+                    f"[this message](https://discord.com/channels/{guild.id}/{target_channel_id}/{message_id})."
+                ),
+                color=discord.Color.green()
+            ))
+        else:
+            await ctx.send(embed=discord.Embed(
+                title="Vote Not Added",
+                description=f"Could not add vote: {reason}",
+                color=discord.Color.orange()
+            ))
+
+    # -------------------------
+    # on_message: auto-react to images
+    # -------------------------
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot:
+            return
+        if not isinstance(message.channel, discord.TextChannel):
+            return
+        if message.channel.id not in self.active_channels:
+            return
+        if is_image_message(message):
+            try:
+                await message.add_reaction(VOTING_PARTIAL)
+            except Exception:
+                pass
+
+    # -------------------------
+    # on_raw_reaction_add: handle user votes
+    # -------------------------
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        if not self.bot.user:
+            return
+        if payload.user_id == self.bot.user.id:
+            return
+        if payload.guild_id is None:
+            return
+
+        def _emoji_matches(e) -> bool:
+            eid = getattr(e, "id", None)
+            name = getattr(e, "name", None)
+            if eid is not None and VOTING_EMOJI_ID is not None:
+                return eid == VOTING_EMOJI_ID
+            if name is not None:
+                return name == VOTING_EMOJI_NAME or str(e) == VOTING_EMOJI_STR
+            return str(e) == VOTING_EMOJI_STR
+
+        if not _emoji_matches(payload.emoji):
+            return
+
+        channel_id = payload.channel_id
+        if channel_id not in self.active_channels:
+            return
+
+        guild = self.bot.get_guild(payload.guild_id)
+        if not guild:
+            return
+
+        member = guild.get_member(payload.user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(payload.user_id)
+            except Exception:
+                member = None
+
+        channel = guild.get_channel(channel_id)
+        if channel is None or not hasattr(channel, "fetch_message"):
+            return
+
+        try:
+            message = await channel.fetch_message(payload.message_id)  # type: ignore[call-arg]
+        except Exception:
+            return
+
+        emoji_obj = (
+            discord.PartialEmoji(name=payload.emoji.name, id=payload.emoji.id)
+            if getattr(payload.emoji, "id", None) is not None
+            else str(payload.emoji)
+        )
+
+        # Always remove the visible reaction immediately to keep count hidden
+        try:
+            await message.remove_reaction(emoji_obj, member or discord.Object(id=payload.user_id))
+        except Exception:
+            pass
+
+        if member is None:
+            return
+
+        # Record the vote (join-age check, dupe check, DB insert, and logging all handled inside)
+        success, reason = await self._record_vote(
+            guild=guild,
+            channel_id=channel_id,
+            message=message,
+            member=member,
+            source="reaction",
+        )
+
+        if not success:
+            try:
+                user = await self.bot.fetch_user(payload.user_id)
+                if reason == "Already voted in this channel.":
+                    await user.send("You have already voted in this event; only one vote is allowed.")
+                elif "30 days" in reason:
+                    await user.send(
+                        f"You must be in the server for at least {MIN_JOIN_DAYS} days to vote in this event."
+                    )
+            except Exception:
+                pass
 
 
-async def setup(bot: commands.Bot) -> None:
+async def setup(bot: commands.Bot):
     await bot.add_cog(EventCog(bot))

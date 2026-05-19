@@ -5,15 +5,15 @@ from datetime import datetime, timedelta
 import pymysql
 import random
 import asyncio
-from config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, GIVEAWAY_CHANNEL_ID
+from . import config
 
 def get_db():
     return pymysql.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME,
+        host=config.DB_HOST,
+        port=config.DB_PORT,
+        user=config.DB_USER,
+        password=config.DB_PASSWORD,
+        database=config.DB_NAME,
         autocommit=True
     )
 
@@ -111,7 +111,7 @@ class Giveaway(commands.Cog):
                 giveaway_embed.set_image(url="https://media.discordapp.net/attachments/1412722866134323270/1414656030914379837/bg.png?ex=68c05c98&is=68bf0b18&hm=d2e8f85ac9a70e0b387058ee1169707bb41b3f73a1b7aae095311ab1716ad197&=&format=webp&quality=lossless&width=1500&height=844")
 
                 from discord import TextChannel
-                giveaway_channel = self.bot.get_channel(GIVEAWAY_CHANNEL_ID)
+                giveaway_channel = self.bot.get_channel(config.GIVEAWAY_CHANNEL_ID)
 
                 if isinstance(giveaway_channel, TextChannel):
                     giveaway_msg = await giveaway_channel.send(embed=giveaway_embed)
