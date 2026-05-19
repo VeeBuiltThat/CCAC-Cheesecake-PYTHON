@@ -5,6 +5,7 @@ Set DASHBOARD_PASSWORD in .env to protect the dashboard (default: cheesecake-adm
 """
 
 import streamlit as st
+import importlib.util
 import json
 import os
 import sys
@@ -97,11 +98,22 @@ def save_settings(settings: dict) -> None:
     st.success("Settings saved to `dashboard_settings.json`. Restart the bot to apply.")
 
 
-# ─── Database Helpers ──────────────────────────────────────────────────────────
+# ─── Bot Config Loader ────────────────────────────────────────────────────────
+
+def _load_cogs_config():
+    """Load cogs/config.py by file path — works even without cogs/__init__.py."""
+    cfg_path = Path(__file__).parent / "cogs" / "config.py"
+    spec = importlib.util.spec_from_file_location("cogs.config", cfg_path)
+    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
+# ─── Database Helpers ─────────────────────────────────────────────────────────
 
 def get_db():
     try:
-        from cogs import config as cfg
+        cfg = _load_cogs_config()
         conn = pymysql.connect(
             host=cfg.DB_HOST,
             port=cfg.DB_PORT,
@@ -151,7 +163,7 @@ def db_execute(sql: str, params: tuple = ()) -> str | None:
 
 def load_bot_config() -> dict:
     try:
-        from cogs import config as cfg
+        cfg = _load_cogs_config()
         return {
             "DB_HOST": cfg.DB_HOST,
             "DB_PORT": cfg.DB_PORT,
@@ -206,6 +218,17 @@ def _int_field(overrides: dict, key: str, fallback) -> int:
 
 def _float_field(overrides: dict, key: str, fallback) -> float:
     return float(overrides.get(key, fallback) or 0.0)
+
+
+def _snowflake_input(label: str, value: int, key: str | None = None, help: str | None = None) -> int:
+    """text_input wrapper for Discord snowflake IDs (too large for JS number_input)."""
+    raw = st.text_input(label, value=str(value) if value else "", key=key, help=help, placeholder="Discord ID")
+    if raw.strip():
+        try:
+            return int(raw.strip())
+        except ValueError:
+            st.error(f"{label}: must be a valid Discord ID (integer).")
+    return value
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -335,13 +358,13 @@ elif page == "Bot Config":
         st.subheader("Core Channel IDs")
         c1, c2 = st.columns(2)
         with c1:
-            absence_ch = st.number_input("Absence Channel", value=_int_field(cfg_ov, "ABSENCE_CHANNEL_ID", bot_cfg.get("ABSENCE_CHANNEL_ID", 0)), step=1, format="%d")
-            staff_ch = st.number_input("Staff Alert Channel", value=_int_field(cfg_ov, "STAFF_ALERT_CHANNEL_ID", bot_cfg.get("STAFF_ALERT_CHANNEL_ID", 0)), step=1, format="%d")
-            mirror_ch = st.number_input("Mirror Channel", value=_int_field(cfg_ov, "MIRROR_CHANNEL_ID", bot_cfg.get("MIRROR_CHANNEL_ID", 0)), step=1, format="%d")
-            mirror_guild = st.number_input("Mirror Guild", value=_int_field(cfg_ov, "MIRROR_GUILD_ID", bot_cfg.get("MIRROR_GUILD_ID", 0)), step=1, format="%d")
+            absence_ch = _snowflake_input("Absence Channel", _int_field(cfg_ov, "ABSENCE_CHANNEL_ID", bot_cfg.get("ABSENCE_CHANNEL_ID", 0)), key="absence_ch")
+            staff_ch = _snowflake_input("Staff Alert Channel", _int_field(cfg_ov, "STAFF_ALERT_CHANNEL_ID", bot_cfg.get("STAFF_ALERT_CHANNEL_ID", 0)), key="staff_ch")
+            mirror_ch = _snowflake_input("Mirror Channel", _int_field(cfg_ov, "MIRROR_CHANNEL_ID", bot_cfg.get("MIRROR_CHANNEL_ID", 0)), key="mirror_ch")
+            mirror_guild = _snowflake_input("Mirror Guild", _int_field(cfg_ov, "MIRROR_GUILD_ID", bot_cfg.get("MIRROR_GUILD_ID", 0)), key="mirror_guild")
         with c2:
-            birthday_ch = st.number_input("Birthday Channel", value=_int_field(cfg_ov, "BIRTHDAY_CHANNEL_ID", bot_cfg.get("BIRTHDAY_CHANNEL_ID", 0)), step=1, format="%d")
-            giveaway_ch = st.number_input("Giveaway Channel", value=_int_field(cfg_ov, "GIVEAWAY_CHANNEL_ID", bot_cfg.get("GIVEAWAY_CHANNEL_ID", 0)), step=1, format="%d")
+            birthday_ch = _snowflake_input("Birthday Channel", _int_field(cfg_ov, "BIRTHDAY_CHANNEL_ID", bot_cfg.get("BIRTHDAY_CHANNEL_ID", 0)), key="birthday_ch")
+            giveaway_ch = _snowflake_input("Giveaway Channel", _int_field(cfg_ov, "GIVEAWAY_CHANNEL_ID", bot_cfg.get("GIVEAWAY_CHANNEL_ID", 0)), key="giveaway_ch")
 
         st.subheader("Allowed Auto-Response Channels")
         allowed_default = "\n".join(str(c) for c in cfg_ov.get("ALLOWED_CHANNELS", bot_cfg.get("ALLOWED_CHANNELS", [])))
@@ -372,10 +395,10 @@ elif page == "Bot Config":
     # ── Roles tab ──
     with tab_roles:
         st.subheader("Role IDs")
-        absence_role = st.number_input(
+        absence_role = _snowflake_input(
             "Absence Role ID",
-            value=_int_field(cfg_ov, "ABSENCE_ROLE_ID", bot_cfg.get("ABSENCE_ROLE_ID", 0)),
-            step=1, format="%d",
+            _int_field(cfg_ov, "ABSENCE_ROLE_ID", bot_cfg.get("ABSENCE_ROLE_ID", 0)),
+            key="absence_role",
             help="Role applied when a staff member marks themselves absent.",
         )
         if st.button("Save Roles", type="primary", key="save_roles"):
@@ -412,10 +435,10 @@ elif page == "Bot Config":
         st.subheader("Starboard Channels")
         c1, c2 = st.columns(2)
         with c1:
-            art_showcase = st.number_input("Art Showcase Channel", value=_int_field(cfg_ov, "ART_SHOWCASE_ID", bot_cfg.get("ART_SHOWCASE_ID", 0)), step=1, format="%d")
-            server_fanart = st.number_input("Server Fanart Channel", value=_int_field(cfg_ov, "SERVER_FANART_ID", bot_cfg.get("SERVER_FANART_ID", 0)), step=1, format="%d")
+            art_showcase = _snowflake_input("Art Showcase Channel", _int_field(cfg_ov, "ART_SHOWCASE_ID", bot_cfg.get("ART_SHOWCASE_ID", 0)), key="art_showcase")
+            server_fanart = _snowflake_input("Server Fanart Channel", _int_field(cfg_ov, "SERVER_FANART_ID", bot_cfg.get("SERVER_FANART_ID", 0)), key="server_fanart")
         with c2:
-            starboard = st.number_input("Starboard Channel", value=_int_field(cfg_ov, "STARBOARD_ID", bot_cfg.get("STARBOARD_ID", 0)), step=1, format="%d")
+            starboard = _snowflake_input("Starboard Channel", _int_field(cfg_ov, "STARBOARD_ID", bot_cfg.get("STARBOARD_ID", 0)), key="starboard_ch")
 
         st.subheader("Appearance")
         custom_emoji = st.text_input("Custom Starboard Emoji", value=cfg_ov.get("CUSTOM_EMOJI", bot_cfg.get("CUSTOM_EMOJI", "")))
@@ -450,10 +473,10 @@ elif page == "CC Relay Bot":
     # ── Identity & Statuses ──
     with tab_id:
         st.subheader("Authorized User")
-        auth_user = st.number_input(
+        auth_user = _snowflake_input(
             "Discord User ID",
-            value=_int_field(cc_ov, "AUTHORIZED_USER", CC_DEFAULTS["AUTHORIZED_USER"]),
-            step=1, format="%d",
+            _int_field(cc_ov, "AUTHORIZED_USER", CC_DEFAULTS["AUTHORIZED_USER"]),
+            key="auth_user",
             help="Only messages from this user are relayed. Changing this restricts bot access.",
         )
 
@@ -814,9 +837,9 @@ elif page == "Events":
         st.info("These values override the hardcoded defaults in `cogs/event.py` after bot restart.")
         ev_ov = settings.get("events", {})
 
-        events_cat = st.number_input("Events Category ID", value=_int_field(ev_ov, "EVENTS_CATEGORY_ID", 1412722642321932298), step=1, format="%d")
-        vote_log = st.number_input("Vote Log Channel ID", value=_int_field(ev_ov, "VOTE_LOG_CHANNEL_ID", 1459105274332844053), step=1, format="%d")
-        commands_ch = st.number_input("Commands Channel ID", value=_int_field(ev_ov, "COMMANDS_CHANNEL_ID", 1431691032516366337), step=1, format="%d")
+        events_cat = _snowflake_input("Events Category ID", _int_field(ev_ov, "EVENTS_CATEGORY_ID", 1412722642321932298), key="events_cat")
+        vote_log = _snowflake_input("Vote Log Channel ID", _int_field(ev_ov, "VOTE_LOG_CHANNEL_ID", 1459105274332844053), key="vote_log")
+        commands_ch = _snowflake_input("Commands Channel ID", _int_field(ev_ov, "COMMANDS_CHANNEL_ID", 1431691032516366337), key="commands_ch")
         min_join = st.number_input(
             "Minimum account age to vote (days)",
             value=_int_field(ev_ov, "MIN_JOIN_DAYS", 30),
