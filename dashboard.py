@@ -1083,11 +1083,11 @@ elif page == "Emergency Comms":
 
     c1, c2 = st.columns(2)
     with c1:
-        ec_channel = st.number_input("Emergency Rules Channel", value=_int_field(ec_ov, "EMERGENCY_CHANNEL_ID", 1435610754425294940), step=1, format="%d")
-        staff_review = st.number_input("Staff Review Channel", value=_int_field(ec_ov, "STAFF_REVIEW_CHANNEL_ID", 1431344160840880159), step=1, format="%d")
+        ec_channel = _snowflake_input("Emergency Rules Channel", _int_field(ec_ov, "EMERGENCY_CHANNEL_ID", 1435610754425294940), key="ec_channel_id")
+        staff_review = _snowflake_input("Staff Review Channel", _int_field(ec_ov, "STAFF_REVIEW_CHANNEL_ID", 1431344160840880159), key="ec_staff_review_id")
     with c2:
-        posting_ch = st.number_input("Approved Posting Channel", value=_int_field(ec_ov, "POSTING_CHANNEL_ID", 1245431550942904341), step=1, format="%d")
-        logs_ch = st.number_input("Logs Channel", value=_int_field(ec_ov, "LOGS_CHANNEL_ID", 1430575592503378142), step=1, format="%d")
+        posting_ch = _snowflake_input("Approved Posting Channel", _int_field(ec_ov, "POSTING_CHANNEL_ID", 1245431550942904341), key="ec_posting_ch_id")
+        logs_ch = _snowflake_input("Logs Channel", _int_field(ec_ov, "LOGS_CHANNEL_ID", 1430575592503378142), key="ec_logs_ch_id")
 
     if st.button("Save Emergency Settings", type="primary", key="save_ec"):
         settings.setdefault("emergency", {}).update({
