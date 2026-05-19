@@ -623,7 +623,7 @@ elif page == "Trigger Responses":
         if st.button("Refresh", key="refresh_triggers"):
             st.cache_data.clear()
 
-        rows = query_db("SELECT id, trigger_text, response_text FROM trigger_words ORDER BY id")
+        rows = query_db("SELECT id, trigger_word, response_text FROM trigger_words ORDER BY id")
 
         if not rows:
             st.info("No custom triggers in the database yet.")
@@ -632,14 +632,14 @@ elif page == "Trigger Responses":
 
             # Search filter
             search = st.text_input("Filter triggers", placeholder="Search by trigger text…")
-            filtered = [r for r in rows if not search or search.lower() in (r["trigger_text"] or "").lower()]
+            filtered = [r for r in rows if not search or search.lower() in (r["trigger_word"] or "").lower()]
 
             for row in filtered:
-                trigger_preview = (row["trigger_text"] or "")[:70]
+                trigger_preview = (row["trigger_word"] or "")[:70]
                 with st.expander(f"#{row['id']}  —  `{trigger_preview}`"):
                     col_t, col_r = st.columns([1, 2])
                     col_t.markdown("**Trigger**")
-                    col_t.code(row["trigger_text"] or "")
+                    col_t.code(row["trigger_word"] or "")
                     col_r.markdown("**Response**")
                     col_r.markdown(row["response_text"] or "")
                     if st.button(f"Delete #{row['id']}", key=f"del_trig_{row['id']}"):
@@ -663,7 +663,7 @@ elif page == "Trigger Responses":
                 st.error("Response text cannot be empty.")
             else:
                 err = db_execute(
-                    "INSERT INTO trigger_words (trigger_text, response_text) VALUES (%s, %s)",
+                    "INSERT INTO trigger_words (trigger_word, response_text) VALUES (%s, %s)",
                     (new_trigger.strip(), new_response.strip()),
                 )
                 if err:
