@@ -632,15 +632,16 @@ elif page == "Trigger Responses":
 
             # Search filter
             search = st.text_input("Filter triggers", placeholder="Search by trigger text…")
-            filtered = [r for r in rows if not search or search.lower() in r["trigger_text"].lower()]
+            filtered = [r for r in rows if not search or search.lower() in (r["trigger_text"] or "").lower()]
 
             for row in filtered:
-                with st.expander(f"#{row['id']}  —  `{row['trigger_text'][:70]}`"):
+                trigger_preview = (row["trigger_text"] or "")[:70]
+                with st.expander(f"#{row['id']}  —  `{trigger_preview}`"):
                     col_t, col_r = st.columns([1, 2])
                     col_t.markdown("**Trigger**")
-                    col_t.code(row["trigger_text"])
+                    col_t.code(row["trigger_text"] or "")
                     col_r.markdown("**Response**")
-                    col_r.markdown(row["response_text"])
+                    col_r.markdown(row["response_text"] or "")
                     if st.button(f"Delete #{row['id']}", key=f"del_trig_{row['id']}"):
                         err = db_execute("DELETE FROM trigger_words WHERE id=%s", (row["id"],))
                         if err:
