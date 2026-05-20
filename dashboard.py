@@ -805,8 +805,8 @@ elif page == "Trigger Responses":
 
     with tab_add:
         st.subheader("Add a New Trigger Response")
-        new_trigger = st.text_input("Trigger Text", placeholder="e.g. how do i join", help="Case-insensitive partial match.")
-        new_response = st.text_area("Response Text", placeholder="Type the bot's reply here…", height=130)
+        new_trigger = st.text_input("Trigger Text", placeholder="e.g. how do i join", help="Case-insensitive partial match.", key="new_trigger_input")
+        new_response = st.text_area("Response Text", placeholder="Type the bot's reply here…", height=130, key="new_response_input")
 
         if st.button("Add Trigger", type="primary", key="add_trigger"):
             if not new_trigger.strip():
@@ -825,6 +825,8 @@ elif page == "Trigger Responses":
                         f"Trigger **`{new_trigger.strip()}`** has been added!",
                         icon="✅",
                     )
+                    st.session_state.pop("new_trigger_input", None)
+                    st.session_state.pop("new_response_input", None)
                     st.cache_data.clear()
                     st.rerun()
 
