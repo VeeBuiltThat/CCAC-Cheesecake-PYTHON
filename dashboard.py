@@ -82,10 +82,12 @@ def check_auth() -> None:
         return
     st.title("Cheesecake Admin Dashboard")
     st.markdown("### Sign in to continue")
+    display_name = st.text_input("Display name", key="login_name", placeholder="Your name")
     password = st.text_input("Password", type="password", key="login_pw")
     if st.button("Sign In", type="primary"):
         if password == ADMIN_PASSWORD:
             st.session_state["authenticated"] = True
+            st.session_state["display_name"] = display_name.strip() or "Admin"
             st.rerun()
         else:
             st.error("Incorrect password.")
@@ -262,6 +264,28 @@ def load_bot_config() -> dict:
         return {}
 
 
+# ─── Role display config ──────────────────────────────────────────────────────
+ROLE_CONFIG: dict[str, dict] = {
+    "owner":  {"label": "Owner",   "color": "#e74c3c", "bg": "#e74c3c33"},
+    "admin":  {"label": "Admin",   "color": "#e67e22", "bg": "#e67e2233"},
+    "sr.mod": {"label": "Sr. Mod", "color": "#9b59b6", "bg": "#9b59b633"},
+    "mod":    {"label": "Mod",     "color": "#5b9bd5", "bg": "#5b9bd533"},
+    "jr.mod": {"label": "Jr. Mod", "color": "#27ae60", "bg": "#27ae6033"},
+}
+
+
+def _server_avatar_b64() -> str:
+    """Return base64 data-URI for serverphoto.png, or empty string if not found."""
+    import base64 as _b64
+    img_path = Path(__file__).parent / "serverphoto.png"
+    if img_path.exists():
+        with open(img_path, "rb") as _f:
+            return "data:image/png;base64," + _b64.b64encode(_f.read()).decode()
+    return ""
+
+
+_AVATAR_B64: str = _server_avatar_b64()
+
 # ─── CC Bot defaults (matches cc.py) ──────────────────────────────────────────
 CC_DEFAULTS = {
     "AUTHORIZED_USER": 766005564190359552,
@@ -281,6 +305,48 @@ CC_DEFAULTS = {
 }
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
+
+def _render_user_card(settings: dict) -> None:
+    """Render the signed-in user's avatar, display name and role badge in the sidebar."""
+    name = st.session_state.get("display_name", "Admin")
+    profiles: dict = settings.get("staff_profiles", {})
+    profile: dict = profiles.get(name, {})
+    role_key: str = profile.get("role", "admin")
+    role = ROLE_CONFIG.get(role_key, ROLE_CONFIG["admin"])
+
+    # Avatar: custom URL from profile → serverphoto.png fallback → initials circle
+    avatar_url: str = profile.get("avatar_url", "") or _AVATAR_B64
+    if avatar_url:
+        avatar_html = (
+            f'<img src="{avatar_url}" '
+            f'style="width:64px;height:64px;border-radius:50%;object-fit:cover;'
+            f'border:2px solid {role["color"]}44;display:block;margin:0 auto 6px;" />'
+        )
+    else:
+        initials = "".join(w[0].upper() for w in name.split()[:2]) or "A"
+        avatar_html = (
+            f'<div style="width:64px;height:64px;border-radius:50%;background:{role["color"]}44;'
+            f'display:flex;align-items:center;justify-content:center;margin:0 auto 6px;'
+            f'font-size:1.4rem;font-weight:700;color:{role["color"]};border:2px solid {role["color"]}44;">'
+            f'{initials}</div>'
+        )
+
+    badge_html = (
+        f'<span style="display:inline-block;padding:2px 10px;border-radius:12px;'
+        f'background:{role["bg"]};color:{role["color"]};font-size:0.72rem;'
+        f'font-weight:700;letter-spacing:0.6px;text-transform:uppercase;">'
+        f'{role["label"]}</span>'
+    )
+
+    st.markdown(
+        f'<div style="text-align:center;padding:10px 0 4px;">'
+        f'{avatar_html}'
+        f'<div style="color:#ffb6c1;font-weight:600;font-size:0.92rem;margin-bottom:4px;">{name}</div>'
+        f'{badge_html}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
 
 def _int_field(overrides: dict, key: str, fallback) -> int:
     return int(overrides.get(key, fallback) or 0)
@@ -319,6 +385,8 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.divider()
+    _render_user_card(settings)
+    st.divider()
     page = st.radio(
         "Navigation",
         [
@@ -338,6 +406,7 @@ with st.sidebar:
     st.divider()
     if st.button("Log Out", use_container_width=True):
         st.session_state["authenticated"] = False
+        st.session_state.pop("display_name", None)
         st.rerun()
     st.caption("Changes require a bot restart.")
 
