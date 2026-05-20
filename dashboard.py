@@ -204,12 +204,59 @@ def db_execute(sql: str, params: tuple = ()) -> str | None:
 
 
 def _patch_db_schema() -> None:
-    """One-time schema migrations — makes legacy NOT NULL columns nullable so
-    dashboard INSERTs don't fail when those columns aren't managed here."""
+    """Detect legacy column names (trigger_word / message) and migrate to the
+    canonical schema (trigger_text / response_text) used by responsehandler.py.
+    Safe to call on every startup — only runs ALTER/UPDATE when needed."""
     conn, _ = get_db()
     if conn is None:
         return
-    conn.close()  # no pending migrations
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'trigger_words'
+                  AND COLUMN_NAME IN ('trigger_word','message','trigger_text','response_text')
+            """)
+            cols = {r["COLUMN_NAME"] for r in (cur.fetchall() or [])}
+
+            # ── trigger_word → trigger_text ──────────────────────────────────
+            if "trigger_word" in cols and "trigger_text" not in cols:
+                # Only old column: just rename it
+                cur.execute(
+                    "ALTER TABLE trigger_words "
+                    "CHANGE COLUMN trigger_word trigger_text TEXT NOT NULL"
+                )
+            elif "trigger_word" in cols and "trigger_text" in cols:
+                # Both exist: copy old data into new column then drop old
+                cur.execute("""
+                    UPDATE trigger_words
+                       SET trigger_text = trigger_word
+                     WHERE (trigger_text IS NULL OR trigger_text = '')
+                       AND trigger_word IS NOT NULL
+                       AND trigger_word != ''
+                """)
+                cur.execute("ALTER TABLE trigger_words DROP COLUMN trigger_word")
+
+            # ── message → response_text ──────────────────────────────────────
+            if "message" in cols and "response_text" not in cols:
+                cur.execute(
+                    "ALTER TABLE trigger_words "
+                    "CHANGE COLUMN message response_text TEXT NOT NULL"
+                )
+            elif "message" in cols and "response_text" in cols:
+                cur.execute("""
+                    UPDATE trigger_words
+                       SET response_text = message
+                     WHERE (response_text IS NULL OR response_text = '')
+                       AND message IS NOT NULL
+                       AND message != ''
+                """)
+                cur.execute("ALTER TABLE trigger_words DROP COLUMN message")
+    except Exception:
+        pass  # best-effort; safe to re-run
+    finally:
+        conn.close()
 
 
 # ─── Config Loader ─────────────────────────────────────────────────────────────
@@ -774,7 +821,10 @@ elif page == "Trigger Responses":
                 if err:
                     st.error(f"Database error: {err}")
                 else:
-                    st.success(f"Added trigger: `{new_trigger.strip()}`")
+                    st.toast(
+                        f"Trigger **`{new_trigger.strip()}`** has been added!",
+                        icon="✅",
+                    )
                     st.cache_data.clear()
                     st.rerun()
 
