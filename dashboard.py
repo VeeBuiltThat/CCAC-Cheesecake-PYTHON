@@ -209,15 +209,7 @@ def _patch_db_schema() -> None:
     conn, _ = get_db()
     if conn is None:
         return
-    try:
-        with conn.cursor() as cur:
-            # trigger_words.message was added in an older schema with NOT NULL;
-            # the dashboard doesn't use it, so make it nullable.
-            cur.execute("ALTER TABLE trigger_words MODIFY COLUMN message TEXT NULL")
-    except Exception:
-        pass  # column may not exist or already nullable — harmless
-    finally:
-        conn.close()
+    conn.close()  # no pending migrations
 
 
 # ─── Config Loader ─────────────────────────────────────────────────────────────
@@ -272,6 +264,32 @@ ROLE_CONFIG: dict[str, dict] = {
     "mod":    {"label": "Mod",     "color": "#5b9bd5", "bg": "#5b9bd533"},
     "jr.mod": {"label": "Jr. Mod", "color": "#27ae60", "bg": "#27ae6033"},
 }
+
+
+# ─── Built-in (hardcoded) triggers — mirrored from responsehandler.py ─────────
+# These are read-only; edit responsehandler.py to change them.
+_BUILTIN_TRIGGERS: list[dict] = [
+    {"category": "Command Lists",       "triggers": "$command_list",                                                                  "response": "Shows the informal command list to users"},
+    {"category": "Command Lists",       "triggers": "$staff command list",                                                            "response": "Shows the staff moderation command list"},
+    {"category": "Greetings",           "triggers": "how are you, cheesecake\nhow's it going, cheesecake",                           "response": "Good, thanks!"},
+    {"category": "Greetings",           "triggers": "bye cheesecake\ngoodbye, cheesecake\nsee you, cheesecake",                      "response": "See you!"},
+    {"category": "Greetings",           "triggers": "hello cheesecake\nhey cheesecake\ncheesecake, come say hi",                     "response": "Yo!"},
+    {"category": "Server Info",         "triggers": "how do i post pictures?\nhow do i post images\nwhy cant i post images?\nlevel 15\nlvl 15", "response": "To post images you need to get level 15!"},
+    {"category": "Server Info",         "triggers": "how do i gain access to the vc stream?\nhow do i get access to the vc stream?", "response": "To get access in vc stream, you need level 15!"},
+    {"category": "Server Info",         "triggers": "what is a kulfi member?",                                                       "response": "They are our ko-fi supporters! (links to the channel)"},
+    {"category": "Server Info",         "triggers": "how can i become a trusted member?\nhow can i become a trusted seller?\nhow can i become a trusted buyer", "response": "Links to trusted member application channel"},
+    {"category": "Server Info",         "triggers": "emergency commissions",                                                         "response": "DM <@1420311570172346408> to apply for emergency commissions!"},
+    {"category": "Fun",                 "triggers": "meow",                                                                          "response": "meow"},
+    {"category": "Fun",                 "triggers": "pastel de queso",                                                               "response": "CAKE OF CHEESE?!?!"},
+    {"category": "Fun",                 "triggers": "bri\nBRI\nBri?",                                                                "response": "Te amamos, bri <3"},
+    {"category": "Fun",                 "triggers": "cheesecake is just very needy\nneedy cheesecake",                               "response": "NO I AM NOT"},
+    {"category": "Fun",                 "triggers": "screams\nSCREAMS\nscreaming",                                                   "response": "AAAAAHHHHHHH"},
+    {"category": "Fun",                 "triggers": "i swear sometimes i hear her",                                                  "response": "Give code. :index_pointing_at_the_viewer:"},
+    {"category": "Fun",                 "triggers": "cheesecake_bigoleyes",                                                          "response": "<:Cheesecake_BigOlEyes:1243938784945639525>"},
+    {"category": "Random (multi-choice)", "triggers": "look cheesecake, a new member!\nwelcome to the server!\ncheesecake, come meet your new friend", "response": "Random from: Greetings, HII so happy to see you, Yo hope you enjoy, OMG ANOTHER FRIEND, A new member! Welcome!, oh a new person!"},
+    {"category": "Random (multi-choice)", "triggers": "cmon, say sorry\ncheesecake, apologize\ncheesecake, you have to apologize, cmon.", "response": "Random from: No. / I don't wanna / ... / I'm sorry... / I'm sorry, I didn't mean that / Make me."},
+    {"category": "Random (multi-choice)", "triggers": "i would die for you, cheesecake...",                                          "response": "Random from: I would burn the world / I pine for you / Aww <3 / I would take a bullet / 4-story cake / personal chef"},
+]
 
 
 def _server_avatar_b64() -> str:
@@ -704,13 +722,13 @@ elif page == "Trigger Responses":
     st.title("Trigger Responses")
     st.markdown("Manage the **database-backed** trigger → response pairs used by `ResponseHandler`.")
 
-    tab_view, tab_add = st.tabs(["View & Remove", "Add New"])
+    tab_view, tab_add, tab_builtin = st.tabs(["View & Remove", "Add New", "Built-in (Read-only)"])
 
     with tab_view:
         if st.button("Refresh", key="refresh_triggers"):
             st.cache_data.clear()
 
-        rows = query_db("SELECT id, trigger_word, message FROM trigger_words ORDER BY id")
+        rows = query_db("SELECT id, trigger_text, response_text FROM trigger_words ORDER BY id")
 
         if not rows:
             st.info("No custom triggers in the database yet.")
@@ -719,16 +737,16 @@ elif page == "Trigger Responses":
 
             # Search filter
             search = st.text_input("Filter triggers", placeholder="Search by trigger text…")
-            filtered = [r for r in rows if not search or search.lower() in (r["trigger_word"] or "").lower()]
+            filtered = [r for r in rows if not search or search.lower() in (r["trigger_text"] or "").lower()]
 
             for row in filtered:
-                trigger_preview = (row["trigger_word"] or "")[:70]
+                trigger_preview = (row["trigger_text"] or "")[:70]
                 with st.expander(f"#{row['id']}  —  `{trigger_preview}`"):
                     col_t, col_r = st.columns([1, 2])
                     col_t.markdown("**Trigger**")
-                    col_t.code(row["trigger_word"] or "")
+                    col_t.code(row["trigger_text"] or "")
                     col_r.markdown("**Response**")
-                    col_r.markdown(row["message"] or "")
+                    col_r.markdown(row["response_text"] or "")
                     if st.button(f"Delete #{row['id']}", key=f"del_trig_{row['id']}"):
                         err = db_execute("DELETE FROM trigger_words WHERE id=%s", (row["id"],))
                         if err:
@@ -750,7 +768,7 @@ elif page == "Trigger Responses":
                 st.error("Response text cannot be empty.")
             else:
                 err = db_execute(
-                    "INSERT INTO trigger_words (trigger_word, message) VALUES (%s, %s)",
+                    "INSERT INTO trigger_words (trigger_text, response_text) VALUES (%s, %s)",
                     (new_trigger.strip(), new_response.strip()),
                 )
                 if err:
@@ -759,6 +777,32 @@ elif page == "Trigger Responses":
                     st.success(f"Added trigger: `{new_trigger.strip()}`")
                     st.cache_data.clear()
                     st.rerun()
+
+    with tab_builtin:
+        st.markdown(
+            "These responses are **hardcoded** in `cogs/responsehandler.py` and always active. "
+            "Edit that file to change them. DB triggers (View & Remove tab) are checked **first**."
+        )
+        builtin_search = st.text_input("Filter", placeholder="Search built-in triggers…", key="builtin_search")
+        categories = list(dict.fromkeys(r["category"] for r in _BUILTIN_TRIGGERS))
+        for cat in categories:
+            items = [
+                r for r in _BUILTIN_TRIGGERS
+                if r["category"] == cat and (
+                    not builtin_search
+                    or builtin_search.lower() in r["triggers"].lower()
+                    or builtin_search.lower() in r["response"].lower()
+                )
+            ]
+            if not items:
+                continue
+            st.markdown(f"#### {cat}")
+            for item in items:
+                trigger_lines = item["triggers"].split("\n")
+                trigger_display = " · ".join(f"`{t}`" for t in trigger_lines)
+                with st.expander(trigger_lines[0]):
+                    st.markdown(f"**Triggers:** {trigger_display}")
+                    st.markdown(f"**Response:** {item['response']}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
